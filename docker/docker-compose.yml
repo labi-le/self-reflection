@@ -1,0 +1,45 @@
+services:
+  vision:
+    image: ghcr.io/ggml-org/llama.cpp:server-vulkan
+    container_name: tg2llm-vision
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    security_opt:
+      - seccomp=unconfined
+    ports:
+      - "8080:8080"
+    volumes:
+      - ${MODELS_DIR:-/mnt/ssd2tb/llm/models}:/models
+    command: >
+      -m /models/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
+      --mmproj /models/mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf
+      --host 0.0.0.0 --port 8080
+      --device Vulkan0 -ngl 99
+      -c 16384 -np 1 --flash-attn on
+    restart: unless-stopped
+    # Defensive host-RAM cap (host has no swap): if host-side memory ever spikes, Docker
+    # kills + auto-restarts only this service instead of risking a whole-host OOM. The earlier
+    # image-decode crash was VRAM KV-slot exhaustion (fixed via -np 1), not host RAM.
+    mem_limit: 20g
+    memswap_limit: 20g
+
+  tg2llm:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: tg2llm:latest
+    container_name: tg2llm
+    depends_on:
+      - vision
+    volumes:
+      - ${EXPORT_DIR:-/home/labile/Downloads/ChatExport_2026-06-25}:/export
+      - ${WHISPER_MODEL:-/home/labile/.cache/whisper-cpp/ggml-small.bin}:/models/whisper.bin:ro
+    entrypoint: ["/usr/local/bin/parse"]
+    command: >
+      --decode-media
+      --vision-host http://vision:8080
+      --whisper-model /models/whisper.bin
+      /export/result.json /export/parsed_dialogue.txt
+    mem_limit: 4g
+    memswap_limit: 4g

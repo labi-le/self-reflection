@@ -1,0 +1,14 @@
+.git
+.gitignore
+*.txt
+parsed_dialogue.txt
+dialogue.txt
+.tg2llm_media_cache.db*
+docker/
+result.json
+*.ogg
+*.jpg
+*.png
+*.mp4
+.omo
+.idea

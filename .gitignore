@@ -1,0 +1,16 @@
+parsed_dialogue.txt
+dialogue.txt
+result.json
+questions.txt
+
+# Media decode cache (Go SQLite)
+.tg2llm_media_cache.db*
+
+# Go
+tg2llm
+*.test
+*.out
+
+# IDE / agent
+.idea/
+.omo/
