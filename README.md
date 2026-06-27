@@ -1,6 +1,6 @@
 # tg2llm
 
-Convert a Telegram / AyuGram JSON export into a clean, LLM-friendly plain-text dialogue — with optional **local** media decoding: voice messages are transcribed (whisper.cpp) and photos are described (a vision model), so the whole conversation becomes readable text.
+Convert a Telegram JSON export into a clean, LLM-friendly plain-text dialogue — with optional **local** media decoding: voice messages are transcribed (whisper.cpp) and photos are described (a vision model), so the whole conversation becomes readable text.
 
 Written in Go (hexagonal architecture), stdlib-first; the only third-party dependencies are a pure-Go SQLite driver and zerolog.
 

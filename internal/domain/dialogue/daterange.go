@@ -2,6 +2,7 @@ package dialogue
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -29,7 +30,7 @@ func ParseBound(value string, isEnd bool) (time.Time, error) {
 	if value == "" {
 		return time.Time{}, fmt.Errorf("empty date")
 	}
-	value = trimSpace(value)
+	value = strings.TrimSpace(value)
 	formats := []string{
 		"2006-01-02T15:04:05",
 		"2006-01-02 15:04:05",
@@ -37,26 +38,15 @@ func ParseBound(value string, isEnd bool) (time.Time, error) {
 		"2006-01-02 15:04",
 		"2006-01-02",
 	}
-	for _, fmt := range formats {
-		t, err := time.Parse(fmt, value)
+	for _, layout := range formats {
+		t, err := time.Parse(layout, value)
 		if err != nil {
 			continue
 		}
-		if fmt == "2006-01-02" && isEnd {
+		if layout == "2006-01-02" && isEnd {
 			t = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
 		}
 		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("invalid date format: %s", value)
-}
-
-func trimSpace(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
 }

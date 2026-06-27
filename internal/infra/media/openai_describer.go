@@ -73,6 +73,9 @@ type oaiResponse struct {
 	} `json:"choices"`
 }
 
+// Describe sends the image at absPath to the vision server and returns a
+// single-line description, or "" on any error (unreadable file, transport
+// failure, non-200 status, or an unparseable/empty response).
 func (d *OpenAIDescriber) Describe(absPath string) string {
 	log := ctxlog.Op(d.logger, "OpenAIDescriber.Describe")
 

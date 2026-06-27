@@ -48,15 +48,8 @@ func (s *ParseService) Run() error {
 		if s.decoder != nil {
 			decoded := decodedByID[msg.ID]
 			if decoded != "" {
-				label := msg.MediaType
-				if label == "" && msg.HasPhoto {
-					label = "photo"
-				}
-				if label == "" {
-					label = "media"
-				}
 				caption := dialogue.Caption(msg)
-				tag := "[" + label + ": " + decoded + "]"
+				tag := dialogue.FormatDecoded(msg, decoded)
 				if caption != "" {
 					text = caption + " " + tag
 				} else {
@@ -99,7 +92,17 @@ func (s *ParseService) Run() error {
 		}
 	}
 
-	return s.sink.Close()
+	if err := s.sink.Close(); err != nil {
+		return err
+	}
+
+	if s.decoder != nil {
+		if err := s.decoder.Flush(); err != nil {
+			return fmt.Errorf("flushing decoded media: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // decodeAll decodes media for every in-range message, using s.opts.Jobs worker

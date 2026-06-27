@@ -8,8 +8,10 @@ import (
 
 // MessageSource is a port for reading messages from a Telegram export.
 type MessageSource interface {
-	// ReadMessages reads and returns all messages from the source.
-	// Also returns the set of referenced message IDs (used for drop-rule exemption).
+	// ReadMessages reads and returns all messages from the source, along with
+	// referencedIDs: the set of message IDs that some message replies to. The
+	// pipeline keeps an otherwise-useless message when its ID is in this set
+	// (the keep-if-referenced drop rule).
 	ReadMessages() (messages []dialogue.Message, referencedIDs map[int]bool, err error)
 }
 
@@ -27,7 +29,8 @@ type DialogueSink interface {
 type MediaDecoder interface {
 	// Decode attempts to decode a media message. Returns "" if decoding is not applicable or fails.
 	Decode(msg dialogue.Message) string
-	// Flush persists any pending work (e.g. cache writes).
+	// Flush persists any pending work and closes the underlying cache, so it must
+	// be called exactly once, after all Decode calls have completed.
 	Flush() error
 }
 

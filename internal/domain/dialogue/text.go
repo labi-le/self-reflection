@@ -30,13 +30,22 @@ func CleanText(msg Message) string {
 		return "[" + msg.StickerEmoji + " Sticker]"
 	}
 	if msg.HasPhoto || msg.MediaType != "" {
-		label := msg.MediaType
-		if label == "" {
-			label = "photo"
-		}
-		return "[" + label + "]"
+		return "[" + MediaLabel(msg) + "]"
 	}
 	return ""
+}
+
+// MediaLabel returns a message's media kind: MediaType, or "photo" when only a photo is present.
+func MediaLabel(msg Message) string {
+	if msg.MediaType != "" {
+		return msg.MediaType
+	}
+	return "photo"
+}
+
+// FormatDecoded renders decoded media text as a "[label: decoded]" tag.
+func FormatDecoded(msg Message, decoded string) string {
+	return "[" + MediaLabel(msg) + ": " + decoded + "]"
 }
 
 // Caption returns the extracted-and-flattened text suitable for a media caption.

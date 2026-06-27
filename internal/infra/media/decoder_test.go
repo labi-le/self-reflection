@@ -1,33 +1,13 @@
 package media
 
 import (
-	"io"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
-
-	"github.com/rs/zerolog"
 
 	"tg2llm/internal/domain/dialogue"
 )
-
-var testLogger = zerolog.New(io.Discard)
-
-// writeFile creates a file with some bytes under root and returns the relative path.
-func writeFile(t *testing.T, root, rel string) string {
-	t.Helper()
-	abs := filepath.Join(root, rel)
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(abs, []byte("fake-bytes"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	return rel
-}
 
 func TestDecoderPhotoAndVoice(t *testing.T) {
 	root := t.TempDir()
@@ -139,41 +119,6 @@ func TestDecoderVersionSalting(t *testing.T) {
 	dC.Flush()
 }
 
-func TestCacheRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cache.db")
-	c := NewCache(path, testLogger)
-	if c == nil {
-		t.Fatal("NewCache returned nil")
-	}
-	c.Put("photo:abc123:v1", "описание на русском")
-	if err := c.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-
-	c2 := NewCache(path, testLogger)
-	if c2 == nil {
-		t.Fatal("reopen returned nil")
-	}
-	defer c2.Close()
-	if got := c2.Get("photo:abc123:v1"); got != "описание на русском" {
-		t.Fatalf("reloaded value = %q", got)
-	}
-	if got := c2.Get("missing"); got != "" {
-		t.Fatalf("missing key = %q, want empty", got)
-	}
-}
-
-func TestNilCacheSafe(t *testing.T) {
-	var c *Cache
-	if got := c.Get("k"); got != "" {
-		t.Fatalf("nil cache Get = %q", got)
-	}
-	c.Put("k", "v") // must not panic
-	if err := c.Close(); err != nil {
-		t.Fatalf("nil cache Close err: %v", err)
-	}
-}
-
 func TestDecoderDedupByContentHash(t *testing.T) {
 	root := t.TempDir()
 	relA := writeFile(t, root, "photos/a.jpg")
@@ -201,30 +146,37 @@ func TestDecoderConcurrentSingleflight(t *testing.T) {
 	root := t.TempDir()
 	rel := writeFile(t, root, "photos/p.jpg")
 
+	const n = 24
 	var calls int32
+	arrived := make(chan struct{}, 1)
 	release := make(chan struct{})
 	describe := func(string) string {
 		atomic.AddInt32(&calls, 1)
-		<-release // hold the in-flight slot so concurrent callers must collapse onto it
+		arrived <- struct{}{} // signal that the single in-flight backend call is parked
+		<-release             // hold the in-flight slot so concurrent callers must collapse onto it
 		return "one description"
 	}
 	d := NewDecoder(root, nil, describe, NewCache(filepath.Join(root, "c.db"), testLogger), map[string]string{"photo": "v1"}, testLogger)
 
-	const n = 24
 	msg := dialogue.Message{HasPhoto: true, PhotoPath: rel}
 	results := make([]string, n)
+	started := make(chan struct{}, n)
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			started <- struct{}{}
 			<-start
 			results[idx] = d.Decode(msg)
 		}(i)
 	}
+	for i := 0; i < n; i++ {
+		<-started // every goroutine is scheduled and ready to race
+	}
 	close(start)
-	time.Sleep(50 * time.Millisecond) // let followers reach the in-flight wait
+	<-arrived // the elected leader holds the in-flight slot; followers collapse onto it
 	close(release)
 	wg.Wait()
 
@@ -238,5 +190,53 @@ func TestDecoderConcurrentSingleflight(t *testing.T) {
 	}
 	if err := d.Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
+	}
+}
+
+func TestBuildDefaultDecoderWiring(t *testing.T) {
+	d := BuildDefaultDecoder(
+		t.TempDir(),
+		"",
+		&WhisperConfig{Model: "model.gguf", Bin: "whisper-cli", Lang: "ru"},
+		&VisionConfig{Model: "qwen", Host: "http://localhost:8080"},
+		testLogger,
+	)
+	if d.transcribeFn == nil {
+		t.Error("transcribeFn should be set when whisper.Model is non-empty")
+	}
+	if d.describeFn == nil {
+		t.Error("describeFn should be set when vision config is provided")
+	}
+	if d.cacheVersions["voice"] == "" {
+		t.Error("voice cache version should be salted")
+	}
+	if d.cacheVersions["photo"] == "" {
+		t.Error("photo cache version should be salted")
+	}
+}
+
+func TestBuildDefaultDecoderNilConfigsDisableBackends(t *testing.T) {
+	d := BuildDefaultDecoder(t.TempDir(), "", nil, nil, testLogger)
+	if d.transcribeFn != nil {
+		t.Error("transcribeFn should be nil when whisper config is nil")
+	}
+	if d.describeFn != nil {
+		t.Error("describeFn should be nil when vision config is nil")
+	}
+}
+
+func TestBuildDefaultDecoderEmptyWhisperModelDisablesVoice(t *testing.T) {
+	d := BuildDefaultDecoder(
+		t.TempDir(),
+		"",
+		&WhisperConfig{Bin: "whisper-cli", Lang: "ru"},
+		&VisionConfig{Model: "qwen", Host: "http://h", Prompt: "p"},
+		testLogger,
+	)
+	if d.transcribeFn != nil {
+		t.Error("transcribeFn should be nil when whisper.Model is empty")
+	}
+	if d.describeFn == nil {
+		t.Error("describeFn should remain set")
 	}
 }

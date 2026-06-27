@@ -12,8 +12,7 @@ import (
 // Cache is a SQLite-backed key/value store that persists decoded-media results so
 // expensive operations (whisper transcription, vision description) run once per
 // file. Keys are derived from the file's content hash (see Decoder.decodePath),
-// so identical media is decoded a single time regardless of its path. Replaces
-// the former JSON sidecar.
+// so identical media is decoded a single time regardless of its path.
 type Cache struct {
 	db     *sql.DB
 	logger zerolog.Logger
@@ -29,7 +28,7 @@ func NewCache(path string, logger zerolog.Logger) *Cache {
 	ctxLog := ctxlog.Op(logger, "Cache.New").With().Str("path", path).Logger()
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		ctxLog.Error().Err(err).Msg("cache open failed")
+		ctxLog.Warn().Err(err).Msg("cache open failed")
 		return nil
 	}
 	// SQLite allows a single writer; one connection avoids intra-process
@@ -41,7 +40,7 @@ func NewCache(path string, logger zerolog.Logger) *Cache {
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()
-			ctxLog.Error().Err(err).Str("pragma", pragma).Msg("cache pragma failed")
+			ctxLog.Warn().Err(err).Str("pragma", pragma).Msg("cache pragma failed")
 			return nil
 		}
 	}
@@ -50,7 +49,7 @@ func NewCache(path string, logger zerolog.Logger) *Cache {
 		value TEXT NOT NULL
 	);`); err != nil {
 		db.Close()
-		ctxLog.Error().Err(err).Msg("cache schema failed")
+		ctxLog.Warn().Err(err).Msg("cache schema failed")
 		return nil
 	}
 	return &Cache{db: db, logger: logger}

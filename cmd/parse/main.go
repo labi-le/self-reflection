@@ -88,7 +88,7 @@ func run(args []string) error {
 		dateRange.To = &to
 	}
 
-	source := tgexport.NewReader(inputPath)
+	source := tgexport.NewReader(inputPath, logger)
 	sink, err := textsink.NewWriter(outputPath)
 	if err != nil {
 		ctxLog.Error().Err(err).Msg("opening output file")
@@ -126,14 +126,8 @@ func run(args []string) error {
 		decoder = media.BuildDefaultDecoder(
 			exportRoot,
 			cachePath,
-			expandedModel,
-			*whisperBin,
-			*whisperLang,
-			*visionModel,
-			*visionHost,
-			*visionPrompt,
-			true, // enableVoice
-			true, // enablePhoto
+			&media.WhisperConfig{Model: expandedModel, Bin: *whisperBin, Lang: *whisperLang},
+			&media.VisionConfig{Model: *visionModel, Host: *visionHost, Prompt: *visionPrompt},
 			logger,
 		)
 	}
@@ -142,13 +136,6 @@ func run(args []string) error {
 	if err := svc.Run(); err != nil {
 		ctxLog.Error().Err(err).Msg("parse failed")
 		return err
-	}
-
-	if decoder != nil {
-		if err := decoder.Flush(); err != nil {
-			ctxLog.Error().Err(err).Msg("flushing decoded media")
-			return fmt.Errorf("flushing decoded media: %w", err)
-		}
 	}
 
 	fmt.Printf("Wrote dialogue to %s\n", outputPath)

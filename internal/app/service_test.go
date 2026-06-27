@@ -150,3 +150,8 @@ func TestServiceParallelMatchesSequential(t *testing.T) {
 		t.Fatal("sequential output is empty")
 	}
 }
+
+func TestServiceEmptyInput(t *testing.T) {
+	got := runService(t, fakeSource{}, nil, app.ParseOptions{ShowDateHeaders: true})
+	assertEqual(t, got, "")
+}

@@ -7,7 +7,7 @@ against the source on the current tree (`go build/vet/test ./...` is green; `go 
 
 ## What this is
 
-`tg2llm` converts a **Telegram / AyuGram JSON export** (`result.json`) into a clean,
+`tg2llm` converts a **Telegram JSON export** (`result.json`) into a clean,
 LLM-friendly **plain-text dialogue**. Optionally it decodes media locally: **voice** →
 transcript (whisper.cpp via `whisper-cli`), **photos** → description/OCR via an
 **OpenAI-compatible vision server** (typically llama.cpp on a GPU).
@@ -79,9 +79,10 @@ internal/infra/textsink/writer.go write the dialogue text (day headers + message
 internal/infra/media/
   cache.go                        SQLite cache (WAL, single conn, INSERT-or-replace, nil-safe).
   decoder.go                      Decoder (port impl), content-hash keying, singleflight
-                                  (decodeOnce), BuildDefaultDecoder, DEFAULT_VISION_PROMPT (RU),
-                                  NOT_INCLUDED guard.
-  whisper.go                      Signature (SHA-1[:10] of parts joined by "|") + OneLine.
+                                  (decodeOnce), BuildDefaultDecoder, defaultVisionPrompt (RU),
+                                  notIncluded guard.
+  signature.go                    Signature (SHA-1[:10] of parts joined by "|").
+  oneline.go                      OneLine (trim + drop blank lines, join with one space).
   whisper_transcriber.go          Transcriber: ffmpeg -> 16kHz mono WAV -> whisper-cli.
   openai_describer.go             OpenAIDescriber: the ONLY vision backend (/v1/chat/completions).
 pkg/ctxlog/context.go             ctxlog.Op(logger, "Type.Method") = operation-scoped zerolog.
@@ -130,7 +131,7 @@ per-request flag.
   Each step has a 600s timeout context. Non-speech clips correctly yield whisper annotations
   like `*звук*` / `[музыка]`.
 - **Skipped** (no decode branch): stickers, videos, audio files, generic files.
-- A `rel` path that is empty or contains `File not included` (`NOT_INCLUDED`) is skipped before
+- A `rel` path that is empty or contains `File not included` (`notIncluded`) is skipped before
   hashing.
 
 Backend errors are **logged, never fatal** (`.Warn().Err(...)`, visible with `--verbose`); the

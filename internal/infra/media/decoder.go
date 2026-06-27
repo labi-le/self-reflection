@@ -15,13 +15,18 @@ import (
 	"tg2llm/internal/domain/dialogue"
 )
 
-// NOT_INCLUDED is the placeholder text AyuGram uses for unavailable files.
-const NOT_INCLUDED = "File not included"
+// notIncluded is the placeholder text AyuGram uses for unavailable files.
+const notIncluded = "File not included"
 
-// DEFAULT_VISION_PROMPT is the Russian prompt sent to the vision model by default.
-const DEFAULT_VISION_PROMPT = "Опиши, что изображено на картинке, и передай весь важный текст с неё. " +
+// defaultVisionPrompt is the Russian prompt sent to the vision model by default.
+const defaultVisionPrompt = "Опиши, что изображено на картинке, и передай весь важный текст с неё. " +
 	"Если это мем или шутка — кратко объясни смысл; если нет — про мемы не упоминай. " +
 	"Ответь одним абзацем, без переносов строк."
+
+const (
+	kindPhoto = "photo"
+	kindVoice = "voice"
+)
 
 // TranscribeFunc is the signature for a voice transcription backend.
 type TranscribeFunc func(absPath string) string
@@ -64,14 +69,14 @@ func NewDecoder(exportRoot string, transcribeFn TranscribeFunc, describeFn Descr
 // Decode attempts to decode a media message. Returns "" if no decoding is applicable or fails.
 func (d *Decoder) Decode(msg dialogue.Message) string {
 	if msg.HasPhoto && d.describeFn != nil {
-		log := ctxlog.Op(d.logger, "Decode")
+		log := ctxlog.Op(d.logger, "Decoder.Decode")
 		log.Trace().Object("msg", msg).Msg("decode requested")
-		return d.decodePath(msg.PhotoPath, d.describeFn, "photo")
+		return d.decodePath(msg.PhotoPath, d.describeFn, kindPhoto)
 	}
 	if msg.MediaType == "voice_message" && d.transcribeFn != nil {
-		log := ctxlog.Op(d.logger, "Decode")
+		log := ctxlog.Op(d.logger, "Decoder.Decode")
 		log.Trace().Object("msg", msg).Msg("decode requested")
-		return d.decodePath(msg.FilePath, d.transcribeFn, "voice")
+		return d.decodePath(msg.FilePath, d.transcribeFn, kindVoice)
 	}
 	return ""
 }
@@ -79,7 +84,7 @@ func (d *Decoder) Decode(msg dialogue.Message) string {
 func (d *Decoder) decodePath(rel string, fn func(string) string, kind string) string {
 	ctxLog := ctxlog.Op(d.logger, "Decoder.decodePath").With().Str("kind", kind).Str("path", rel).Logger()
 
-	if rel == "" || strings.Contains(rel, NOT_INCLUDED) {
+	if rel == "" || strings.Contains(rel, notIncluded) {
 		return ""
 	}
 	absPath := filepath.Join(d.exportRoot, rel)
@@ -127,19 +132,21 @@ func (d *Decoder) decodeOnce(key, absPath string, fn func(string) string, ctxLog
 	d.inflight[key] = c
 	d.mu.Unlock()
 
+	// Releasing the slot and waking waiters runs in a defer so a panic in fn can
+	// never deadlock concurrent callers or leak the key.
+	defer func() {
+		d.mu.Lock()
+		delete(d.inflight, key)
+		d.mu.Unlock()
+		c.wg.Done()
+	}()
+
 	ctxLog.Info().Msg("decoding media")
 	text := strings.TrimSpace(fn(absPath))
 	if text != "" && d.cache != nil {
 		d.cache.Put(key, text)
 	}
-
-	// Cache the result before releasing waiters so late callers hit the cache.
 	c.val = text
-	d.mu.Lock()
-	delete(d.inflight, key)
-	d.mu.Unlock()
-	c.wg.Done()
-
 	return text
 }
 
@@ -165,35 +172,49 @@ func (d *Decoder) Flush() error {
 	return nil
 }
 
-// BuildDefaultDecoder wires whisper.cpp + the vision backend into a Decoder.
-func BuildDefaultDecoder(exportRoot string, cachePath string,
-	whisperModel string, whisperBin string, whisperLang string,
-	visionModel string, visionHost string, visionPrompt string,
-	enableVoice bool, enablePhoto bool, logger zerolog.Logger) *Decoder {
+// WhisperConfig configures the voice-transcription backend (whisper.cpp).
+type WhisperConfig struct {
+	Model string
+	Bin   string
+	Lang  string
+}
 
-	if visionPrompt == "" {
-		visionPrompt = DEFAULT_VISION_PROMPT
-	}
+// VisionConfig configures the photo-description backend (OpenAI-compatible vision server).
+type VisionConfig struct {
+	Model  string
+	Host   string
+	Prompt string
+}
 
+// BuildDefaultDecoder wires whisper.cpp + the vision backend into a Decoder. A nil
+// whisper (or one with an empty Model) disables voice transcription; a nil vision
+// disables photo description.
+func BuildDefaultDecoder(exportRoot, cachePath string, whisper *WhisperConfig, vision *VisionConfig, logger zerolog.Logger) *Decoder {
 	var transcribeFn TranscribeFunc
 	var describeFn DescribeFunc
+	cacheVersions := map[string]string{}
 
-	if enableVoice && whisperModel != "" {
-		t := NewTranscriber(whisperModel, whisperBin, whisperLang, "ffmpeg", 600, logger)
+	if whisper != nil && whisper.Model != "" {
+		t := NewTranscriber(whisper.Model, whisper.Bin, whisper.Lang, "ffmpeg", 600, logger)
 		transcribeFn = t.Transcribe
-	}
-	if enablePhoto {
-		describeFn = NewOpenAIDescriber(visionModel, visionHost, visionPrompt, logger).Describe
+		cacheVersions[kindVoice] = Signature(filepath.Base(whisper.Model), whisper.Lang)
 	}
 
+	if vision != nil {
+		prompt := vision.Prompt
+		if prompt == "" {
+			prompt = defaultVisionPrompt
+		}
+		describeFn = NewOpenAIDescriber(vision.Model, vision.Host, prompt, logger).Describe
+		cacheVersions[kindPhoto] = Signature(vision.Model, prompt)
+	}
+
+	// The cache is optional: NewCache returns nil on any error and decoding simply
+	// proceeds uncached. (Contrast NewWriter, which returns an error because a
+	// missing output sink is fatal.)
 	var cache *Cache
 	if cachePath != "" {
 		cache = NewCache(cachePath, logger)
-	}
-
-	cacheVersions := map[string]string{
-		"photo": Signature(visionModel, visionPrompt),
-		"voice": Signature(filepath.Base(whisperModel), whisperLang),
 	}
 
 	return NewDecoder(exportRoot, transcribeFn, describeFn, cache, cacheVersions, logger)
