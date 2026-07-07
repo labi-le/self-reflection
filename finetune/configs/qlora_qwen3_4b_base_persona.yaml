@@ -1,0 +1,65 @@
+### LLaMA-Factory LoRA SFT — Qwen3-4B-BASE persona (bf16, NO quant) — v2 recipe VALIDATION run
+###
+### v2 recipe (Oracle bg_09d67fd7) fixes the v1 failure where the persona was drowned by the
+### instruct model's assistant identity and only surfaced (degenerately) at high temp:
+###   1. BASE model, not instruct  -> no baked-in "я ассистент" identity to override.
+###   2. lora_alpha 16 -> 128 (scaling alpha/r 0.25 -> 2.0)  -> persona wins the LOW-temp argmax
+###      instead of sitting in a weak high-temp tail. THIS is the main v1 bug.
+###   3. data v2 (train.premium2.jsonl): cleaned persona (emoji runs <=3) + instruct stripped to
+###      plain text (no markdown/code/LaTeX) + ~400 identity examples, ONE Денис system prompt on
+###      every row. 2 epochs (was 3) to cut the mild overfit/degeneration tail.
+### This is the fast 4B-BASE dress rehearsal (~2.5h) before the 14h 8B-Base run. Validate:
+### persona holds at low temp, identity is "Денис" (not "я бот"), no emoji/word-salad, format stable.
+###
+### CRITICAL: launch WITHOUT HSA_OVERRIDE_GFX_VERSION (segfaults native gfx1201). Env = HIP_VISIBLE_DEVICES=0.
+### Run: HIP_VISIBLE_DEVICES=0 /opt/venv/bin/llamafactory-cli train finetune/configs/qlora_qwen3_4b_base_persona.yaml
+
+### model
+model_name_or_path: Qwen/Qwen3-4B-Base
+trust_remote_code: true
+flash_attn: disabled  # gfx1201: eager attention only (RDNA4 flash kernels unstable)
+
+### method — LoRA bf16 no-quant (4B base fits 16 GB unquantized)
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 128        # scaling 2.0 (was 16 = scaling 0.25, the under-amplification bug)
+lora_dropout: 0.10     # was 0.05; light regularization vs noisy Telegram tail
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj  # NOT embed/lm_head
+
+### dataset — v2 (cleaned persona + stripped instruct + identity, unified Денис prompt)
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_premium2
+template: qwen3_nothink
+cutoff_len: 512  # eager attn seq^2 thrashed the HIP allocator at 1024 on the 4B; 512 keeps VRAM ~11GB
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output
+output_dir: saves/qwen3-4b-base-persona-v3
+logging_steps: 10
+save_steps: 200
+save_total_limit: 4
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_torch
+num_train_epochs: 3       # v3: v2@2ep learned the persona well but never emitted <|im_end|> (finish_reason always "length" -> rambles past its turn). Oracle: bump 2->3 for base-model stop/format stability.
+learning_rate: 5.0e-5     # do NOT raise — alpha=128 already amplifies the update ~8x
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 200

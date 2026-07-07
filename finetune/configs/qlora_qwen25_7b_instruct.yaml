@@ -1,0 +1,75 @@
+### LLaMA-Factory QLoRA SFT — Qwen2.5-7B-Instruct persona LoRA (AMD ROCm / RDNA)
+###
+### Run (from the repo root, with the LLaMA-Factory venv active):
+###   llamafactory-cli train finetune/configs/qlora_qwen25_7b_instruct.yaml
+###
+### The dataset named below is registered in finetune/data/dataset_info.json and
+### expects finetune/data/train.jsonl in the ShareGPT "messages" schema locked in
+### finetune/README.md (the CONTRACT for Tasks 5/6).
+
+### model — MUST be the *Instruct* checkpoint, never the Base model.
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 16
+lora_dropout: 0.05
+# lora_target is restricted to the attention + MLP projection matrices.
+# lm_head and embed_tokens are DELIBERATELY EXCLUDED: adapting the (tied) Qwen2.5
+# embedding / output head under 4-bit QLoRA wastes VRAM and destabilises training.
+# Keep this list literal — do not substitute the "all" shorthand.
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### quantization — QLoRA via bitsandbytes NF4 (4-bit base weights).
+quantization_bit: 4
+quantization_method: bnb
+
+### dataset
+# dataset_dir must live in-config, not as a CLI flag: `llamafactory-cli train <yaml>`
+# rejects extra CLI args. /app/finetune holds the dataset_info.json symlink whose
+# file_name "data/train.jsonl" resolves to /app/finetune/data/train.jsonl.
+dataset_dir: /app/finetune
+dataset: persona_sharegpt
+template: qwen
+cutoff_len: 1024
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output
+output_dir: saves/qwen2.5-7b-instruct-persona-qlora
+# Resume target, kept current by the auto-resume supervisor (train_supervisor.sh)
+# after each intermittent gfx1201 GPU-Hang; loses at most save_steps of progress.
+resume_from_checkpoint: saves/qwen2.5-7b-instruct-persona-qlora/checkpoint-7750
+logging_steps: 10
+save_steps: 50
+save_total_limit: 3
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_8bit
+num_train_epochs: 3
+learning_rate: 1.0e-4
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
+# AMD RDNA / ROCm note: keep torch.compile OFF. If you observe NaN loss on
+# gfx11xx (RDNA3), do NOT enable torch.compile / `use_torch_compile` — the ROCm
+# inductor backend is a known NaN source there. LLaMA-Factory leaves compile off
+# by default; do not turn it on in this config.
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 200

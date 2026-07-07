@@ -1,0 +1,61 @@
+### LLaMA-Factory LoRA SFT — Qwen3-4B-INSTRUCT persona (bf16, NO quant) — v2-instruct fix validation
+###
+### BASE-MODEL PATH ABANDONED after 3 runs: the base lm_head (frozen) cannot learn to emit <|im_end|>;
+### 3 epochs only made it worse (garbage tokens). The instruct model already knows ChatML stopping.
+###
+### The v1 instruct failure was NOT the instruct priors alone — it was the alpha under-amplification
+### (alpha16=scaling0.25) which made the persona invisible at low temp. Fix: alpha128 + cleaned data.
+### Validate this on the fast 4B before the 14h 8B.
+###
+### CRITICAL: launch WITHOUT HSA_OVERRIDE_GFX_VERSION. Env = HIP_VISIBLE_DEVICES=0.
+### Run: HIP_VISIBLE_DEVICES=0 /opt/venv/bin/llamafactory-cli train finetune/configs/qlora_qwen3_4b_instruct_v2.yaml
+
+### model
+model_name_or_path: Qwen/Qwen3-4B
+trust_remote_code: true
+flash_attn: disabled
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 128        # KEY FIX: scaling 2.0 (was 16 = 0.25 — the under-amplification bug)
+lora_dropout: 0.10
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### dataset — v2 (cleaned persona + stripped instruct + identity, unified Denis prompt)
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_premium2
+template: qwen3_nothink
+cutoff_len: 512
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output
+output_dir: saves/qwen3-4b-instruct-v2
+logging_steps: 10
+save_steps: 200
+save_total_limit: 4
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_torch
+num_train_epochs: 2
+learning_rate: 5.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 200

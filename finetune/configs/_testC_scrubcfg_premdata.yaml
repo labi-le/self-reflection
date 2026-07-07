@@ -1,0 +1,65 @@
+### LLaMA-Factory QLoRA SFT — Qwen2.5-7B-Instruct persona LoRA (PII-SCRUBBED retrain)
+###
+### Identical hyperparameters to qlora_qwen25_7b_instruct.yaml (seed 42) but trains on
+### the PII-scrubbed corpus (phones/emails/domain redacted) from a FRESH start — no
+### resume_from_checkpoint — so no memorised PII carries over from the original run.
+###
+### Run (from the repo root, with the LLaMA-Factory venv active):
+###   llamafactory-cli train finetune/configs/qlora_qwen25_7b_instruct_scrubbed.yaml
+
+### model — MUST be the *Instruct* checkpoint, never the Base model.
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 16
+lora_dropout: 0.05
+# lm_head and embed_tokens are DELIBERATELY EXCLUDED: adapting the (tied) Qwen2.5
+# embedding / output head under 4-bit QLoRA wastes VRAM and destabilises training.
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### quantization — QLoRA via bitsandbytes NF4 (4-bit base weights).
+quantization_bit: 4
+quantization_method: bnb
+
+### dataset — the PII-scrubbed ShareGPT corpus (registered in data/dataset_info.json).
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_premium
+template: qwen
+cutoff_len: 1024
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output — separate dir; NO resume_from_checkpoint (fresh run on scrubbed data).
+output_dir: saves/_testC
+logging_steps: 10
+save_steps: 50
+save_total_limit: 3
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_8bit
+num_train_epochs: 3
+learning_rate: 1.0e-4
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
+# AMD RDNA / ROCm: keep torch.compile OFF — the ROCm inductor backend is a known
+# NaN-loss source on gfx11xx. LLaMA-Factory leaves it off by default; do not enable it.
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 200

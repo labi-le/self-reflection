@@ -1,0 +1,69 @@
+### LLaMA-Factory QLoRA SFT — Qwen3-8B persona (bitsandbytes NF4 4-bit) — FULL premium run.
+###
+### Why 8B + 4-bit QLoRA on gfx1201 (RX 9070 XT / RDNA4):
+###   - 8B in bf16 (~16 GB weights) does NOT fit 16 GB for training -> must quantize.
+###   - bnb NF4 4-bit page-faulted on stock ROCm 7.2.3 (rocBLAS MT64x64x64_ISA1201 tile).
+###   - The TheRock nightly torch 2.13+rocm7.13 in this container patches that rocBLAS bug
+###     -> bnb 4-bit trains. VERIFY with qlora_qwen3_8b_smoke.yaml (20 steps) BEFORE this run.
+###   - 8B >> 4B on multi-turn context tracking (fixes the q3fast-4B repetition/looping seen in
+###     real chat). Same premium blend (70% persona scrubbed+spaced + 30% restyled RU instruct).
+###
+### r64/ga8 is the empirically fault-safe shape on gfx1201 (r32/ga16 page-faults early).
+### CRITICAL: launch WITHOUT HSA_OVERRIDE_GFX_VERSION. Env = HIP_VISIBLE_DEVICES=0 [+ HSA_ENABLE_COREDUMP=0].
+###
+### Run (from /app in tg2llm-finetune):
+###   HIP_VISIBLE_DEVICES=0 /opt/venv/bin/llamafactory-cli train finetune/configs/qlora_qwen3_8b_persona_premium.yaml
+
+### model
+model_name_or_path: Qwen/Qwen3-8B
+trust_remote_code: true
+flash_attn: disabled   # gfx1201: eager attention (flash kernels unstable on RDNA4)
+
+### method — 4-bit QLoRA via bitsandbytes NF4
+stage: sft
+do_train: true
+finetuning_type: lora
+quantization_bit: 4
+quantization_method: bnb
+lora_rank: 64
+lora_alpha: 16
+lora_dropout: 0.05
+# lm_head / embed_tokens deliberately excluded (tied embeddings under 4-bit QLoRA waste VRAM + destabilise).
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### dataset — FULL premium blend (15650 rows, registered in data/dataset_info.json)
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_premium
+template: qwen3_nothink
+cutoff_len: 1024   # 8B 4-bit weights (~5GB) leave room for 1024 under eager+grad-checkpoint; drop to 512 if OOM
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output
+output_dir: saves/qwen3-8b-persona-qlora-premium
+logging_steps: 10
+save_steps: 200
+save_total_limit: 6
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_torch   # gfx1201: paged_adamw_8bit / adamw_bnb_8bit give loss=0/NaN -> plain adamw_torch
+num_train_epochs: 3
+learning_rate: 5.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
+# AMD RDNA4 / ROCm: keep torch.compile OFF (ROCm inductor backend is a known NaN-loss source on gfx12xx).
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 200

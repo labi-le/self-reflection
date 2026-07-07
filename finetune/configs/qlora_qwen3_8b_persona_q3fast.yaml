@@ -1,0 +1,75 @@
+### LLaMA-Factory QLoRA SFT — Qwen3-8B persona LoRA (FAST validation on a 3000-row premium subsample)
+###
+### Base upgrade: Qwen2.5-7B → Qwen3-8B (hybrid thinking, native RU across 119 langs, stronger
+### instruction-following). Trained NON-THINKING (template qwen3_nothink) so casual Денис replies
+### emit no <think> traces; thinking stays available at inference via enable_thinking=True.
+### Fast iteration: 3000-row random subsample (seed 42) of the premium blend (~70% persona +
+### ~30% restyled RU instruct), valid-JSON filtered (premium had 6 newline-broken rows, excluded).
+### r64/ga8 kept — the proven fault-free config on gfx1201 (r32/ga16 page-faults at an early step).
+### Fresh start — no resume_from_checkpoint.
+###
+### Run (from repo root, LLaMA-Factory venv):
+###   llamafactory-cli train finetune/configs/qlora_qwen3_8b_persona_q3fast.yaml
+
+### model
+model_name_or_path: Qwen/Qwen3-8B
+trust_remote_code: true
+# gfx1201: FORCE eager attention. The flash-attn kernel page-faults on Qwen3's attention
+# (Memory access fault at step 9 with r64/ga8 — Qwen2.5 lacked this). Eager is slower but stable.
+flash_attn: disabled
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 16
+lora_dropout: 0.05
+# lm_head / embed_tokens excluded (standard QLoRA); LoRA only on attention + MLP projections.
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### quantization — HQQ 4-bit (pure PyTorch). bnb NF4's dequant hits a rocBLAS Tensile GEMM tile
+### (MT64x64x64_ISA1201) that page-faults on gfx1201 for Qwen3 shapes; HQQ has no rocBLAS path.
+quantization_bit: 4
+quantization_method: hqq
+
+### dataset — fast 3000-row premium subsample (registered in data/dataset_info.json).
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_q3fast
+template: qwen3_nothink
+cutoff_len: 1024
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output — separate dir; fresh run (no resume_from_checkpoint).
+output_dir: saves/qwen3-8b-persona-qlora-q3fast-hqq
+logging_steps: 10
+save_steps: 50
+save_total_limit: 10
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+# adamw_torch, NOT paged_adamw_8bit: the paged/8bit optimizers ARE bitsandbytes kernels and
+# reintroduce the gfx1201 bnb fault. adamw_torch is bnb-free and stable (~1 GB more VRAM).
+optim: adamw_torch
+num_train_epochs: 3
+max_steps: 100
+learning_rate: 5.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
+# AMD RDNA4 / ROCm: keep torch.compile OFF — the ROCm inductor backend is a known NaN-loss
+# source on gfx11xx/12xx. Do not enable it.
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 50

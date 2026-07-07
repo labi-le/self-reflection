@@ -1,0 +1,67 @@
+### LLaMA-Factory LoRA SFT — Qwen3-4B persona (bf16, NO quantization) — FAST run on a 3000-row premium subsample
+###
+### Why Qwen3-4B bf16 no-quant on gfx1201 (RX 9070 XT / RDNA4, ROCm 7.2.3, transformers 5.6):
+###   - bnb NF4 4-bit page-faults on gfx1201 (rocBLAS MT64x64x64_ISA1201 tile) at an early step.
+###   - HQQ 4-bit is unimplemented in transformers 5.6 (QuantizationMethod.HQQ not available).
+###   - Qwen3.5/3.6 use Gated-DeltaNet linear attention needing fla/causal-conv1d kernels absent on ROCm.
+###   Escape: Qwen3-4B (standard GQA attention) fits 16 GB in bf16 with NO quant -> sidesteps all three.
+###   Qwen3-4B is hybrid-thinking (enable_thinking on demand; off for casual RU), strong RU, IFEval ~89.
+###
+### CRITICAL: launch WITHOUT HSA_OVERRIDE_GFX_VERSION — that override segfaults native gfx1201 torch
+### compute. Env = HIP_VISIBLE_DEVICES=0 only. Do NOT reuse the tg2llm_*_premium.sh daemons (they
+### hardcode the override).
+###
+### Run (from /app inside the tg2llm-finetune container):
+###   HIP_VISIBLE_DEVICES=0 /opt/venv/bin/llamafactory-cli train finetune/configs/qlora_qwen3_4b_persona_bf16.yaml
+
+### model
+model_name_or_path: Qwen/Qwen3-4B
+trust_remote_code: true
+# gfx1201: FORCE eager attention (flash-attn kernels are unstable on RDNA4). Matches the working demo.
+flash_attn: disabled
+
+### method — LoRA in bf16, no quantization (the 4B base fits 16 GB unquantized).
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### dataset — fast 3000-row premium subsample (registered in data/dataset_info.json).
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_q3fast
+template: qwen3_nothink
+cutoff_len: 512  # eager attention memory grows with seq^2; 512 keeps VRAM ~11GB (1024 thrashed the HIP allocator at the 16GB ceiling)
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output — fresh run (no resume_from_checkpoint).
+output_dir: saves/qwen3-4b-persona-lora-bf16
+logging_steps: 10
+save_steps: 100
+save_total_limit: 5
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_torch
+num_train_epochs: 3
+learning_rate: 5.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
+# AMD RDNA4 / ROCm: keep torch.compile OFF (ROCm inductor backend is a known NaN-loss source on gfx11xx/12xx).
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 100

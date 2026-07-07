@@ -1,0 +1,43 @@
+### FAST mini validation — Qwen3-4B-INSTRUCT + alpha=128, ~1200-row subset (~300 steps ~9min)
+### Purpose: rapidly test whether a recipe makes the persona dominate at LOW temp + stop cleanly,
+### BEFORE spending 1.7h (full 4B) or 14h (8B). No eval, save only at end.
+### Run: HIP_VISIBLE_DEVICES=0 /opt/venv/bin/llamafactory-cli train finetune/configs/qlora_qwen3_4b_mini.yaml
+
+model_name_or_path: Qwen/Qwen3-4B
+trust_remote_code: true
+flash_attn: disabled
+
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 128
+lora_dropout: 0.10
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_mini
+template: qwen3_nothink
+cutoff_len: 512
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+output_dir: saves/qwen3-4b-mini
+logging_steps: 10
+save_steps: 10000
+save_total_limit: 1
+plot_loss: false
+overwrite_output_dir: true
+report_to: none
+
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_torch
+num_train_epochs: 2
+learning_rate: 5.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42

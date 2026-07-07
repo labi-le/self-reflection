@@ -1,0 +1,55 @@
+### 8B bitsandbytes-NF4 4-bit QLoRA SMOKE TEST (gfx1201 / RX 9070 XT) — 20 optimizer steps.
+###
+### Purpose: confirm bnb NF4 4-bit no longer page-faults on the TheRock nightly torch
+### 2.13+rocm7.13 (the fix that unblocked bf16 training). The original bnb fault hit at
+### optimizer step 8-9; 20 steps clears that danger zone. PASS = 20 steps, no page-fault,
+### sane non-0 / non-NaN decreasing loss, VRAM fits. Then run the full premium config.
+###
+### CRITICAL: launch WITHOUT HSA_OVERRIDE_GFX_VERSION (segfaults native gfx1201).
+### Env = HIP_VISIBLE_DEVICES=0 [+ HSA_ENABLE_COREDUMP=0]. Do NOT reuse tg2llm_*_premium.sh daemons.
+
+### model
+model_name_or_path: Qwen/Qwen3-8B
+trust_remote_code: true
+flash_attn: disabled   # gfx1201: eager attention (flash kernels unstable on RDNA4)
+
+### method — 4-bit QLoRA via bitsandbytes NF4 (8B needs quant to fit 16 GB)
+stage: sft
+do_train: true
+finetuning_type: lora
+quantization_bit: 4
+quantization_method: bnb
+lora_rank: 64
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### dataset — fast 3000-row subsample (smoke only)
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_q3fast
+template: qwen3_nothink
+cutoff_len: 1024
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output — throwaway
+output_dir: saves/qwen3-8b-smoke
+logging_steps: 1
+max_steps: 20
+save_steps: 1000
+save_total_limit: 1
+plot_loss: false
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_torch   # gfx1201: paged/8bit optimizers give loss=0/NaN -> plain adamw_torch
+learning_rate: 5.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
