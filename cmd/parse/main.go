@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"tg2llm/internal/app"
+	"tg2llm/internal/bot"
 	"tg2llm/internal/domain/dialogue"
 	"tg2llm/internal/infra/media"
-	"tg2llm/internal/infra/textsink"
 	"tg2llm/internal/infra/tgexport"
 	"tg2llm/pkg/ctxlog"
 
@@ -26,7 +26,33 @@ func main() {
 	}
 }
 
-func run(args []string) error {
+// parsedFlags holds the raw values needed by run() that are NOT part of
+// ParseOptions (media-decode wiring, verbosity). ParseOptions itself carries
+// the pipeline-level knobs.
+type parsedFlags struct {
+	decodeMedia  bool
+	whisperModel string
+	whisperBin   string
+	whisperLang  string
+	visionModel  string
+	visionHost   string
+	visionPrompt string
+	mediaCache   string
+	verbose      bool
+}
+
+// parseFlags is the CLI-parsing seam: it registers every flag on a fresh
+// FlagSet, applies value normalisation (owner id prefixing, ~ expansion for
+// path-shaped strings), and returns the populated ParseOptions plus the raw
+// positional args. Splitting this out of run() lets tests exercise the flag
+// wiring without touching disk or the pipeline.
+func parseFlags(args []string) (app.ParseOptions, []string, error) {
+	var raw parsedFlags
+	opts, positional, err := parseFlagsInto(args, &raw)
+	return opts, positional, err
+}
+
+func parseFlagsInto(args []string, raw *parsedFlags) (app.ParseOptions, []string, error) {
 	fs := flag.NewFlagSet("parse", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: parse [flags] <input.json> [output.txt]\n\nFlags:\n")
@@ -46,16 +72,117 @@ func run(args []string) error {
 	dateTo := fs.String("date-to", "", "skip messages after this date (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
 	verbose := fs.Bool("verbose", false, "verbose (trace-level) logging with caller info")
 
+	// Dataset / persona-bot flags (Task 4). Wired into ParseOptions here;
+	// downstream sink/scope logic lands in later tasks.
+	format := fs.String("format", "text", "output format: text|chatml")
+	ownerUserID := fs.String("owner-user-id", "", "owner sender id (bare number N → user<N>; already-prefixed passes through)")
+	chatScope := fs.String("chat-scope", "personal", "chat scope: personal|all")
+	sessionGap := fs.Duration("session-gap", 30*time.Minute, "gap between messages that starts a new session")
+	ctxTurns := fs.Int("ctx-turns", 6, "context turns to prepend when materialising a training sample")
+	cutoffLen := fs.Int("cutoff-len", 1024, "per-example length cap used to bound context turns")
+	maxPerChat := fs.Int("max-per-chat", 4000, "cap of samples per chat (0 = unlimited)")
+	personaSystem := fs.String("persona-system", bot.DefaultPersonaSystem, "literal system prompt OR path to a file (leading ~ expanded); defaults to the locked persona prompt")
+	burstDelim := fs.String("burst-delim", "\u2063", "delimiter joining consecutive same-sender messages inside a burst")
+
 	if err := fs.Parse(args); err != nil {
+		return app.ParseOptions{}, nil, err
+	}
+
+	raw.decodeMedia = *decodeMedia
+	raw.whisperModel = *whisperModel
+	raw.whisperBin = *whisperBin
+	raw.whisperLang = *whisperLang
+	raw.visionModel = *visionModel
+	raw.visionHost = *visionHost
+	raw.visionPrompt = *visionPrompt
+	raw.mediaCache = *mediaCache
+	raw.verbose = *verbose
+
+	var dateRange dialogue.DateRange
+	if *dateFrom != "" {
+		from, err := dialogue.ParseBound(*dateFrom, false)
+		if err != nil {
+			return app.ParseOptions{}, nil, fmt.Errorf("invalid --date-from: %w", err)
+		}
+		dateRange.From = &from
+	}
+	if *dateTo != "" {
+		to, err := dialogue.ParseBound(*dateTo, true)
+		if err != nil {
+			return app.ParseOptions{}, nil, fmt.Errorf("invalid --date-to: %w", err)
+		}
+		dateRange.To = &to
+	}
+
+	opts := app.ParseOptions{
+		ShowDateHeaders: true,
+		DateRange:       dateRange,
+		Jobs:            *jobs,
+
+		Format:        *format,
+		OwnerFromID:   normalizeOwnerID(*ownerUserID),
+		ChatScope:     *chatScope,
+		SessionGap:    *sessionGap,
+		CtxTurns:      *ctxTurns,
+		CutoffLen:     *cutoffLen,
+		MaxPerChat:    *maxPerChat,
+		PersonaSystem: resolvePersonaSystem(*personaSystem),
+		BurstDelim:    *burstDelim,
+	}
+
+	return opts, fs.Args(), nil
+}
+
+// normalizeOwnerID turns a bare numeric telegram user id into the "user<N>"
+// prefixed form used throughout the export ("from_id"), and passes through
+// anything already prefixed (or empty).
+func normalizeOwnerID(v string) string {
+	if v == "" {
+		return ""
+	}
+	if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return "user" + v
+	}
+	return v
+}
+
+// resolvePersonaSystem accepts either a literal system prompt or a path to a
+// file whose contents are the prompt. A leading "~" is expanded to $HOME
+// exactly like --whisper-model. Anything that does not resolve to an existing
+// file is treated as a literal and returned verbatim.
+func resolvePersonaSystem(v string) string {
+	if v == "" {
+		return ""
+	}
+	candidate := v
+	if candidate[0] == '~' {
+		if home, err := os.UserHomeDir(); err == nil {
+			candidate = filepath.Join(home, candidate[1:])
+		}
+	}
+	info, err := os.Stat(candidate)
+	if err != nil || info.IsDir() {
+		return v
+	}
+	body, err := os.ReadFile(candidate)
+	if err != nil {
+		return v
+	}
+	return string(body)
+}
+
+func run(args []string) error {
+	var raw parsedFlags
+	opts, positional, err := parseFlagsInto(args, &raw)
+	if err != nil {
 		return err
 	}
 
-	logger := initLogger(*verbose)
+	logger := initLogger(raw.verbose)
 	ctxLog := ctxlog.Op(logger, "run")
 
-	positional := fs.Args()
 	if len(positional) == 0 {
-		fs.Usage()
+		fmt.Fprintf(os.Stderr, "Usage: parse [flags] <input.json> [output.txt]\n")
 		ctxLog.Error().Msg("input file is required")
 		return fmt.Errorf("input file is required")
 	}
@@ -70,52 +197,33 @@ func run(args []string) error {
 		return fmt.Errorf("input file not found: %s", inputPath)
 	}
 
-	var dateRange dialogue.DateRange
-	if *dateFrom != "" {
-		from, err := dialogue.ParseBound(*dateFrom, false)
-		if err != nil {
-			ctxLog.Error().Err(err).Str("date-from", *dateFrom).Msg("invalid --date-from")
-			return err
-		}
-		dateRange.From = &from
-	}
-	if *dateTo != "" {
-		to, err := dialogue.ParseBound(*dateTo, true)
-		if err != nil {
-			ctxLog.Error().Err(err).Str("date-to", *dateTo).Msg("invalid --date-to")
-			return err
-		}
-		dateRange.To = &to
-	}
+	reader := tgexport.NewReader(inputPath, logger)
 
-	source := tgexport.NewReader(inputPath, logger)
-	sink, err := textsink.NewWriter(outputPath)
+	ctxLog.Debug().Object("opts", opts).Msg("parse options")
+
+	source, sink, sinkFile, err := buildPipeline(opts, reader, outputPath, logger)
 	if err != nil {
 		ctxLog.Error().Err(err).Msg("opening output file")
 		return err
 	}
-
-	opts := app.ParseOptions{
-		ShowDateHeaders: true,
-		DateRange:       dateRange,
-		Jobs:            *jobs,
+	if sinkFile != nil {
+		defer func() { _ = sinkFile.Close() }()
 	}
-	ctxLog.Debug().Object("opts", opts).Msg("parse options")
 
 	var decoder app.MediaDecoder
 
-	if *decodeMedia {
+	if raw.decodeMedia {
 		exportRoot := filepath.Dir(abspath(inputPath))
-		cachePath := *mediaCache
+		cachePath := raw.mediaCache
 		if cachePath == "" {
 			cachePath = filepath.Join(exportRoot, ".tg2llm_media_cache.db")
 		}
 
-		if *whisperModel == "" {
+		if raw.whisperModel == "" {
 			ctxLog.Warn().Msg("whisper model not set; voice messages stay as placeholders")
 		}
 
-		expandedModel := *whisperModel
+		expandedModel := raw.whisperModel
 		if expandedModel != "" && expandedModel[0] == '~' {
 			home, err := os.UserHomeDir()
 			if err == nil {
@@ -126,8 +234,8 @@ func run(args []string) error {
 		decoder = media.BuildDefaultDecoder(
 			exportRoot,
 			cachePath,
-			&media.WhisperConfig{Model: expandedModel, Bin: *whisperBin, Lang: *whisperLang},
-			&media.VisionConfig{Model: *visionModel, Host: *visionHost, Prompt: *visionPrompt},
+			&media.WhisperConfig{Model: expandedModel, Bin: raw.whisperBin, Lang: raw.whisperLang},
+			&media.VisionConfig{Model: raw.visionModel, Host: raw.visionHost, Prompt: raw.visionPrompt},
 			logger,
 		)
 	}

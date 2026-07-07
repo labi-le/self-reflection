@@ -20,4 +20,16 @@ func (m Message) MarshalZerologObject(e *zerolog.Event) {
 	if m.ForwardedFrom != "" {
 		e.Str("forwarded_from", m.ForwardedFrom)
 	}
+	if m.FromID != "" {
+		e.Str("from_id", m.FromID)
+	}
+	if m.ActorID != "" {
+		e.Str("actor_id", m.ActorID)
+	}
+	if m.ChatType != "" {
+		e.Str("chat_type", m.ChatType)
+	}
+	if m.ChatID != "" {
+		e.Str("chat_id", m.ChatID)
+	}
 }

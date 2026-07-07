@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -12,15 +13,33 @@ import (
 	"tg2llm/pkg/ctxlog"
 )
 
-// Reader implements app.MessageSource for Telegram JSON exports.
+// Reader implements app.MessageSource for Telegram JSON exports. It handles both
+// the single-chat export (top-level "messages" or a bare array) and the
+// full-account export (root object with personal_information/chats/left_chats).
 type Reader struct {
-	path   string
-	logger zerolog.Logger
+	path      string
+	logger    zerolog.Logger
+	ownerHint string
+	owner     string
 }
 
 // NewReader creates a Reader for the given JSON export file.
 func NewReader(path string, logger zerolog.Logger) *Reader {
 	return &Reader{path: path, logger: logger}
+}
+
+// WithOwnerHint sets the explicit account-owner id (e.g. from --owner-user-id)
+// that wins over auto-detection. It returns the reader for fluent construction.
+func (r *Reader) WithOwnerHint(hint string) *Reader {
+	r.ownerHint = hint
+	return r
+}
+
+// OwnerFromID returns the account owner resolved by the most recent ReadMessages
+// call. It is empty when no owner was needed or resolvable (single-chat / legacy
+// exports without identity data).
+func (r *Reader) OwnerFromID() string {
+	return r.owner
 }
 
 // ReadMessages reads the JSON export and returns domain messages + referenced IDs.
@@ -37,69 +56,67 @@ func (r *Reader) ReadMessages() ([]dialogue.Message, map[int]bool, error) {
 		return nil, nil, fmt.Errorf("parsing JSON: %w", err)
 	}
 
-	// Get the messages array: if top-level is object, use its "messages" field;
-	// if it's already an array, use it directly.
-	var rawMsgs []interface{}
-	switch v := raw.(type) {
-	case map[string]interface{}:
-		if arr, ok := v["messages"].([]interface{}); ok {
-			rawMsgs = arr
-		}
-	case []interface{}:
-		rawMsgs = v
-	}
+	c := newCollector(log)
 
-	// Build referenced_ids from ALL message objects (not filtered by type).
-	referencedIDs := make(map[int]bool)
-	for _, rm := range rawMsgs {
-		m, ok := rm.(map[string]interface{})
-		if !ok {
-			continue
+	root, isObject := raw.(map[string]interface{})
+	if isObject && isFullAccount(root) {
+		for _, chat := range fullAccountChats(root) {
+			rawMsgs, _ := chat["messages"].([]interface{})
+			c.collect(getString(chat, "type"), numberToString(chat["id"]), rawMsgs)
 		}
-		if rid := getInt(m, "reply_to_message_id"); rid != nil {
-			referencedIDs[*rid] = true
-		}
-	}
-
-	skipped := 0
-	var messages []dialogue.Message
-	for _, rm := range rawMsgs {
-		m, ok := rm.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Skip entries that are not chat messages (service/system events).
-		if getString(m, "type") != "message" {
-			skipped++
-			log.Debug().Int("id", getIntVal(m, "id")).Str("reason", "non-message").Msg("skipping record")
-			continue
-		}
-
-		dateStr := getString(m, "date")
-		if dateStr == "" {
-			skipped++
-			log.Debug().Int("id", getIntVal(m, "id")).Str("reason", "empty-date").Msg("skipping record")
-			continue
-		}
-		var msgDate time.Time
-		var err error
-		for _, layout := range []string{
-			"2006-01-02T15:04:05",
-			"2006-01-02 15:04:05",
-			time.RFC3339,
-			"2006-01-02T15:04",
-			"2006-01-02 15:04",
-			"2006-01-02",
-		} {
-			msgDate, err = time.Parse(layout, dateStr)
-			if err == nil {
-				break
-			}
-		}
+		owner, err := r.detectOwnerFullAccount(root)
 		if err != nil {
-			skipped++
-			log.Debug().Int("id", getIntVal(m, "id")).Str("reason", "unparseable-date").Msg("skipping record")
+			return nil, nil, err
+		}
+		r.owner = owner
+	} else {
+		chatType, chatID, rawMsgs := singleChat(raw)
+		c.collect(chatType, chatID, rawMsgs)
+		r.owner = r.detectOwnerSingleChat(chatType, chatID, c.messages)
+	}
+
+	if c.skipped > 0 {
+		log.Warn().Int("skipped", c.skipped).Msg("skipped non-message or unparseable records")
+	}
+
+	return c.messages, c.referencedIDs, nil
+}
+
+type collector struct {
+	referencedIDs map[int]bool
+	messages      []dialogue.Message
+	skipped       int
+	log           zerolog.Logger
+}
+
+func newCollector(log zerolog.Logger) *collector {
+	return &collector{referencedIDs: make(map[int]bool), log: log}
+}
+
+// collect records reply_to targets from ALL records (service included, so the
+// keep-if-referenced drop rule still sees them) but appends only message-type
+// records, tagged with chatType / chatID.
+func (c *collector) collect(chatType, chatID string, rawMsgs []interface{}) {
+	for _, rm := range rawMsgs {
+		m, ok := rm.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		if rid := getInt(m, "reply_to_message_id"); rid != nil {
+			c.referencedIDs[*rid] = true
+		}
+
+		if getString(m, "type") != "message" {
+			c.skipped++
+			c.log.Debug().Int("id", getIntVal(m, "id")).Str("reason", "non-message").Msg("skipping record")
+			continue
+		}
+
+		msgDate, ok := resolveDate(m)
+		if !ok {
+			c.skipped++
+			c.log.Debug().Int("id", getIntVal(m, "id")).Str("reason", "undated").Msg("skipping record")
 			continue
 		}
 
@@ -115,6 +132,10 @@ func (r *Reader) ReadMessages() ([]dialogue.Message, map[int]bool, error) {
 			StickerEmoji:    getString(m, "sticker_emoji"),
 			PhotoPath:       getString(m, "photo"),
 			FilePath:        getString(m, "file"),
+			FromID:          getString(m, "from_id"),
+			ActorID:         getString(m, "actor_id"),
+			ChatType:        chatType,
+			ChatID:          chatID,
 		}
 
 		if _, hasPhoto := m["photo"]; hasPhoto {
@@ -124,14 +145,36 @@ func (r *Reader) ReadMessages() ([]dialogue.Message, map[int]bool, error) {
 			msg.Sender = "Unknown"
 		}
 
-		messages = append(messages, msg)
+		c.messages = append(c.messages, msg)
 	}
+}
 
-	if skipped > 0 {
-		log.Warn().Int("skipped", skipped).Msg("skipped non-message or unparseable records")
+var dateLayouts = [...]string{
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05",
+	time.RFC3339,
+	"2006-01-02T15:04",
+	"2006-01-02 15:04",
+	"2006-01-02",
+}
+
+// resolveDate parses the local-ISO "date" string (six layouts); when it is empty
+// or unparseable it falls back to the "date_unixtime" seconds string. ok is false
+// only when neither yields a timestamp.
+func resolveDate(m map[string]interface{}) (time.Time, bool) {
+	if s := getString(m, "date"); s != "" {
+		for _, layout := range dateLayouts {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t, true
+			}
+		}
 	}
-
-	return messages, referencedIDs, nil
+	if s := getString(m, "date_unixtime"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return time.Unix(n, 0).UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 // extractText concatenates polymorphic text fields.
@@ -191,4 +234,21 @@ func getIntVal(m map[string]interface{}, key string) int {
 		return *p
 	}
 	return 0
+}
+
+// numberToString renders a JSON id (chat id / user_id) as an exact integer
+// string. JSON numbers arrive as float64; every Telegram peer id is below 2^53,
+// so float64->int64 is lossless — and it never passes through the narrower int
+// that getInt uses.
+func numberToString(v interface{}) string {
+	switch n := v.(type) {
+	case string:
+		return n
+	case float64:
+		return strconv.FormatInt(int64(n), 10)
+	case json.Number:
+		return n.String()
+	default:
+		return ""
+	}
 }

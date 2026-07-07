@@ -88,6 +88,15 @@ Usage: parse [flags] <input.json> [output.txt]
 | `--date-from` | `""` | skip messages before this date (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS`) |
 | `--date-to` | `""` | skip messages after this date (date-only includes the whole day) |
 | `--verbose` | `false` | trace-level logging with caller info |
+| `--format` | `text` | output format: `text` (today's plain-text dialogue) or `chatml` (LLM-training JSONL; wired in later tasks) |
+| `--owner-user-id` | `""` | sender id treated as the "assistant" side in `chatml` mode. Bare number `N` is expanded to `user<N>`; already-prefixed values (e.g. `user123`) pass through unchanged. |
+| `--chat-scope` | `personal` | which chat types to include: `personal` (personal chats only) or `all` |
+| `--session-gap` | `30m` | gap between consecutive messages that starts a new session in `chatml` mode |
+| `--ctx-turns` | `6` | context turns to prepend when materialising each training example |
+| `--cutoff-len` | `1024` | per-example length cap used to bound context turns |
+| `--max-per-chat` | `4000` | cap of examples per chat (`0` = unlimited) |
+| `--persona-system` | `""` | explicit system prompt for `chatml` mode: either a literal string or a path to a file. A leading `~` is expanded to `$HOME` (same as `--whisper-model`). |
+| `--burst-delim` | `\u2063` | delimiter joining consecutive same-sender messages inside a burst (default: U+2063 INVISIBLE SEPARATOR) |
 
 ### Examples
 

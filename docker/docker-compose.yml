@@ -37,3 +37,56 @@ services:
       --vision-host http://vision:8080
       --whisper-model /models/whisper.bin
       /export/result.json /export/parsed_dialogue.txt
+
+  # LLaMA-Factory QLoRA fine-tuner (ROCm 7.2.3, RDNA4/gfx1201). Under the
+  # `finetune` profile so it NEVER co-runs with `vision` — both want the whole
+  # 16 GB VRAM (Risk #8). Start with: docker compose --profile finetune up -d
+  # finetune, then `docker compose --profile finetune exec finetune bash`.
+  finetune:
+    build:
+      context: ..
+      dockerfile: finetune/docker/Dockerfile
+    image: tg2llm-finetune:latest
+    container_name: tg2llm-finetune
+    profiles: [finetune]
+    # Device/seccomp stanza mirrors the `vision` service (AMD GPU via ROCm).
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    security_opt:
+      - seccomp=unconfined
+    # Numeric host device-GIDs: render (303) owns /dev/kfd + renderD128, video
+    # (26) owns card1. Group *names* fail here — the image has no `render` group
+    # and its `video` gid (44) != the host's (26). Override per host if needed.
+    group_add:
+      - "${VIDEO_GID:-26}"
+      - "${RENDER_GID:-303}"
+    ipc: host
+    # Defensive host-RAM cap (host has no swap), matching vision's documented
+    # mem stanza; bounds dataloader + HF-cache host-RAM spikes during a run.
+    mem_limit: 20g
+    memswap_limit: 20g
+    environment:
+      # RDNA4 (gfx1201) GPU-Hang hardening. HSA_XNACK=0 + non-paged adamw_8bit
+      # killed the deterministic step-150 hang; SDMA off + a HW-queue cap + a GC
+      # threshold target the intermittent mid-run hang (a second hit at step 415).
+      # expandable_segments curbs HIP allocator fragmentation.
+      HSA_XNACK: "0"
+      HSA_ENABLE_SDMA: "0"
+      GPU_MAX_HW_QUEUES: "2"
+      PYTORCH_HIP_ALLOC_CONF: "garbage_collection_threshold:0.8,expandable_segments:True"
+      TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL: "1"
+      # Reserve 6 of 64 CUs (58-63) for the desktop: HSA_CU_MASK restricts ROCm
+      # compute queues only, NOT graphics (per ROCm docs), so those CUs stay free
+      # for the compositor. Training runs full-clock on 58 CUs (~90%), no throttle.
+      HSA_CU_MASK: "0:0-57"
+      # Persist HF downloads (base model, tokenized cache) into the models dir.
+      HF_HOME: /models/hf
+    volumes:
+      - ${MODELS_DIR:-/mnt/ssd2tb/llm/models}:/models
+      - ${DATA_DIR:-../finetune}:/app/finetune
+      - ${OUTPUT_DIR:-../finetune/output}:/app/saves
+    # Idle so we can exec/run into it. Using `command` (not `entrypoint`) keeps
+    # `docker compose run --rm finetune <cmd>` working (run overrides command).
+    command: ["sleep", "infinity"]
+    restart: "no"

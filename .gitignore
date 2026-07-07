@@ -3,6 +3,11 @@ dialogue.txt
 result.json
 questions.txt
 
+# Fine-tune dataset (real PII from the Telegram export) + run outputs
+# (checkpoints, logs) - must never reach the public remote.
+finetune/data/
+finetune/output/
+
 # Media decode cache (Go SQLite)
 .tg2llm_media_cache.db*
 

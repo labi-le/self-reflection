@@ -1,0 +1,104 @@
+{
+  "about": "Synthetic full-account Telegram export fixture for tg2llm reader tests. Not real data.",
+  "personal_information": {
+    "user_id": 777001,
+    "first_name": "Owner",
+    "last_name": "Account"
+  },
+  "chats": {
+    "list": [
+      {
+        "name": "Counterparty",
+        "type": "personal_chat",
+        "id": 200200,
+        "messages": [
+          {
+            "id": 1,
+            "type": "message",
+            "date": "2026-06-19T10:00:00",
+            "date_unixtime": "1781942400",
+            "from": "Counterparty",
+            "from_id": "user200200",
+            "text": "hi there"
+          },
+          {
+            "id": 2,
+            "type": "message",
+            "date": "2026-06-19T10:01:00",
+            "date_unixtime": "1781942460",
+            "from": "Owner",
+            "from_id": "user777001",
+            "text": "hello back"
+          },
+          {
+            "id": 3,
+            "type": "message",
+            "date": "2026-06-19T10:02:00",
+            "date_unixtime": "1781942520",
+            "from": "Owner",
+            "from_id": "user777001",
+            "photo": "photos/photo_1@19-06-2026.jpg",
+            "width": 1280,
+            "height": 720,
+            "text": ""
+          }
+        ]
+      },
+      {
+        "name": "Public Supergroup",
+        "type": "public_supergroup",
+        "id": 300300,
+        "messages": [
+          {
+            "id": 10,
+            "type": "message",
+            "date": "2026-06-19T11:00:00",
+            "date_unixtime": "1781946000",
+            "from": "Member",
+            "from_id": "user444555",
+            "text": "group message"
+          },
+          {
+            "id": 11,
+            "type": "service",
+            "date": "2026-06-19T11:01:00",
+            "date_unixtime": "1781946060",
+            "actor": "Member",
+            "actor_id": "user444555",
+            "action": "pin_message",
+            "message_id": 10
+          },
+          {
+            "id": 12,
+            "type": "message",
+            "date": "",
+            "date_unixtime": "1700000000",
+            "from": "Member",
+            "from_id": "user444555",
+            "text": "unixtime survivor"
+          }
+        ]
+      }
+    ]
+  },
+  "left_chats": {
+    "list": [
+      {
+        "name": "Old Private Group",
+        "type": "private_group",
+        "id": 500500,
+        "messages": [
+          {
+            "id": 20,
+            "type": "message",
+            "date": "2026-06-19T12:00:00",
+            "date_unixtime": "1781949600",
+            "from": "BigId",
+            "from_id": "user5000000001",
+            "text": "large id survivor"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -42,6 +42,14 @@ func (s *ParseService) Run() error {
 			continue
 		}
 
+		// --chat-scope filter (chatml mode only): drop out-of-scope chat types
+		// before any per-message work. Gated on Format so the default text
+		// pipeline — where ChatScope defaults to "personal" — still emits every
+		// message and stays byte-identical.
+		if s.opts.Format == "chatml" && !chatInScope(s.opts.ChatScope, msg.ChatType) {
+			continue
+		}
+
 		text := dialogue.CleanText(msg)
 
 		// Media decoding
@@ -103,6 +111,16 @@ func (s *ParseService) Run() error {
 	}
 
 	return nil
+}
+
+// chatInScope reports whether a message's chat type passes the --chat-scope
+// filter. "personal" keeps only 1:1 personal chats; any other value ("all")
+// keeps every chat type. It is consulted only in chatml mode.
+func chatInScope(scope, chatType string) bool {
+	if scope == "personal" {
+		return chatType == "personal_chat"
+	}
+	return true
 }
 
 // decodeAll decodes media for every in-range message, using s.opts.Jobs worker
