@@ -1,5 +1,12 @@
 # finetune/ — Qwen2.5-7B-Instruct persona LoRA (QLoRA, LLaMA-Factory)
 
+> **⚠️ Superseded — historical.** This file documents the *original* **Qwen2.5-7B-Instruct**
+> QLoRA plan (`paged_adamw_8bit`, `template: qwen`). The project shipped **Qwen3** persona models
+> instead (**4B** and **8B v2**, `lora_alpha 128`, cleaned data). On the target **gfx1201 / RDNA4**
+> GPU the `paged_adamw_8bit` optimizer below produces **NaN loss** — you must use
+> `optim: adamw_torch`. For the real, current pipeline (the GPU fix, the v2 recipe, and the
+> serving config) see **[`docs/persona-finetune-guide.md`](../docs/persona-finetune-guide.md)**.
+
 Config + dataset registry for fine-tuning a **persona LoRA** on top of
 `Qwen/Qwen2.5-7B-Instruct` using [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory),
 4-bit QLoRA (bitsandbytes NF4), tuned for an **AMD ROCm / RDNA** GPU.

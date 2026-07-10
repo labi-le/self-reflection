@@ -285,7 +285,20 @@ blend), `persona_sharegpt_q3fast` (the subsample).
 
 ## 9. Stage 7 — The training config
 
-Current run: **`finetune/configs/qlora_qwen3_4b_persona_bf16.yaml`**.
+> **Recipe evolution — read this first.** The table below is the **first** run,
+> `qlora_qwen3_4b_persona_bf16.yaml` (4B, bf16 no-quant, `lora_alpha 16`). The **shipped** models
+> use the **v2** recipe: `lora_alpha 128`, the cleaned **`persona_sharegpt_premium2`** dataset, an
+> identity block, a unified Денис prompt, and **4-bit QLoRA** (bnb) so the 8B fits 16 GB. The best
+> model is **Qwen3-8B v2** — `configs/qlora_qwen3_8b_instruct_v2.yaml`, train/eval **2.05 / 2.26**
+> (the 4B v2 is 2.16 / 2.36). See **§14** for the full comparison and the serving config that
+> actually works. v2 deltas vs the table below: `quantization_bit: 4` + `quantization_method: bnb`,
+> `lora_alpha: 128`, `lora_dropout: 0.10`, `num_train_epochs: 2`, dataset `persona_sharegpt_premium2`.
+>
+> The 4-bit QLoRA path on gfx1201 also needs a bnb symlink
+> `libbitsandbytes_rocm83.so → libbitsandbytes_rocm72.so` (bnb 0.49.2 ships only up to rocm72;
+> nightly HIP 7.13 probes rocm83) — without it bnb fails to load.
+
+First run (baseline): **`finetune/configs/qlora_qwen3_4b_persona_bf16.yaml`**.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -359,20 +372,43 @@ GPU, so it can't disturb training/serving. It:
 
 Output: `/mnt/ssd2tb/llm/models/persona-build/<name>/gguf/<name>.Q4_K_M.gguf`.
 
+### 11b. Low-RAM path for big adapters (the 8B): apply the LoRA at runtime, don't merge
+
+`build_gguf.sh` step 1 merges the LoRA into an **fp16** copy of the base. For an **8B** that peaks
+~18 GB RAM — which a 30 GB-RAM box with no swap can't spare — and `llama-export-lora` (the
+GGUF-space merger) isn't in `ghcr.io/ggml-org/llama.cpp:full`. So the 8B ships **without a merge**:
+
+1. `convert_hf_to_gguf.py <base-snapshot> --outtype f16` → `base-8b-f16.gguf` (streaming, low RAM).
+2. `convert_lora_to_gguf.py <adapter> --base <base-snapshot> --outtype f16` → `lora-f16.gguf`.
+3. `llama-quantize base-8b-f16.gguf … Q8_0` → `base.Q8_0.gguf` (~8.7 GB; `q8_0` ≈ fp16 perplexity,
+   and pure fp16 at ~16 GB won't fit the 16 GB card).
+4. **Serve the quantized base with the adapter applied at runtime:**
+   `llama-server -m base.Q8_0.gguf --lora lora-f16.gguf …` — confirm `GET /lora-adapters` shows
+   `scale: 1.0` (a no-system-prompt reply that's still in-character proves the adapter is live).
+
+This is exactly how the 8B is served. Bonus: one quantized base can host several adapters with no
+re-merge.
+
 ---
 
 ## 12. Stage 10 — Serve + deploy to the bot
 
 - **Serve** the GGUF with llama.cpp `server-vulkan` (see `docker/`), exposing an OpenAI-style
   `/v1/chat/completions`.
-- **Point the bot** at it via `--llama-host`. The bot injects the same locked persona system
-  prompt, applies anti-loop sampling (`temperature 0.3`, `repeat_penalty 1.1`,
-  `presence_penalty 0.3`), redacts PII, and splits replies into human-paced bubbles.
+- **Point the bot** at it via `--llama-host`. The bot injects the persona system prompt, applies
+  the sampling in **§14** (NOT the old "anti-loop" defaults), redacts PII, and splits replies into
+  human-paced bubbles — a "typing…" indicator plus a jittered pause before **every** bubble, so it
+  never answers instantly.
 - **Thinking on demand:** the persona is trained `qwen3_nothink`, so casual replies carry no
   `<think>` traces; for a hard query you can re-render with `enable_thinking=True` and strip the
   `<think>…</think>` block before display.
-- **Vision** is handled by a *separate* describer model (e.g. Qwen2.5-VL / Qwen3-VL) that turns a
-  photo into `[картинка: …]` text — the persona brain stays text-only.
+- **Vision** is a *separate* describer model (Qwen2.5-VL-7B) that turns a photo into text — the
+  persona brain stays text-only.
+
+> ⚠️ **Do not serve with the intuitive "anti-loop" sampling (low temp + repeat/presence/frequency
+> penalties).** That is exactly what makes these persona models ramble into long, dark, incoherent
+> monologues — the penalties strangle the turn-end token. **§14** has the why and the config that
+> actually works. This was the single biggest serving lesson.
 
 ---
 
@@ -389,6 +425,70 @@ Output: `/mnt/ssd2tb/llm/models/persona-build/<name>/gguf/<name>.Q4_K_M.gguf`.
 | Silent process death loading Qwen3.5/3.6 | Gated-DeltaNet linear attention needs `flash-linear-attention`/`causal-conv1d` (absent on ROCm) | use a **standard-attention** model (Qwen3-4B / Qwen3-8B) |
 | `NotImplementedError: QuantizationMethod.HQQ` | transformers 5.6 doesn't implement HQQ loading | use **bf16 no-quant** or bnb-4bit + patched libs |
 | torch.compile NaN | ROCm inductor backend | keep compile **off** |
+
+---
+
+## 14. Retrospective — which base won, and the serving playbook
+
+Persona bases trained on the same **v2** data (cleaned persona + restyled instruct + identity,
+unified Денис prompt, `lora_rank 64` / `lora_alpha 128`) and served behind the bot:
+
+| Base | Recipe | train / eval loss | Served as | Verdict |
+|---|---|---|---|---|
+| **Qwen3-8B v2** | 4-bit QLoRA, 2 ep — `qlora_qwen3_8b_instruct_v2.yaml` | **2.05 / 2.26** | `q8_0` GGUF **+ runtime `--lora`** (§11b) | **Best.** Most coherent, stays in-voice on longer answers. `q8_0` is effectively lossless. Needs the runtime-lora serve (fp16 merge won't fit 16 GB RAM). |
+| **Qwen3-4B v2** | 4-bit QLoRA, α128, premium2 | 2.16 / 2.36 | `Q4_K_M` GGUF | **Good, lighter fallback.** Terser and a touch less coherent than the 8B, but very usable and it fits on the server GPU next to the vision model — no dedicated GPU needed. |
+| Qwen3-4B (bf16, α16) | the original `qlora_qwen3_4b_persona_bf16.yaml` (§9) | baseline | — | First recipe; superseded by v2 (α128 + cleaned data). |
+
+**Bottom line:** **8B v2 = best**, **4B v2 = runs-anywhere fallback**. But a persona model is only
+as good as its sampling — which was the real fight:
+
+### The sampling lesson (this took the longest to find)
+
+These models *look* like they ramble uncontrollably — runaway length, dark drift ("нет смысла
+жизни…"), name confusion. **It is not the model. It is the repetition penalties.**
+
+- `presence_penalty` / `frequency_penalty` over a wide `repeat_last_n` window also penalise the
+  **turn-end token** (`<|im_end|>`, which recurs every turn already in the context). Penalise it
+  enough and the model literally **cannot stop** → it keeps generating → rambles and drifts dark.
+- Proof (same model, same prompt): **with** the old anti-loop penalties, `ку` → 8–128 tokens
+  (often a `finish_reason: length` runaway). **With penalties off** → every reply is 2–17 tokens,
+  `finish_reason: stop`, terse and in-character.
+
+**The config that actually works (4B and 8B alike):**
+
+| Param | Value | Why |
+|---|---|---|
+| `temperature` | **0.7** | Natural. Low temp (0.3) makes it fixate/loop, not "less random". |
+| `presence_penalty` | **0** | Off — this is what strangled the stop token. |
+| `frequency_penalty` | **0** | Off — worse than presence (scales by count). |
+| `repeat_penalty` | **1.1** | Mild anti-loop that barely touches the stop token. |
+| `repeat_last_n` | **64** | Small window, so the stop token isn't repeatedly penalised. |
+| system-prompt nudge | append **"Пиши коротко, 1-2 фразы, без монологов."** | Terse in-voice replies, no truncation. |
+| `--n-predict` (server) | ~**80** | Optional hard safety cap; with penalties off it's rarely hit. |
+
+Bot flags that encode it:
+`--temperature 0.7 --repeat-penalty 1.1 --presence-penalty 0 --frequency-penalty 0 --repeat-last-n 64`
+plus `--persona-system "<locked prompt> Пиши коротко, 1-2 фразы, без монологов."`
+
+### Two features tried and then removed
+
+- **Interlocutor profile (long-term memory).** A separate instruct model re-derived a "досье" on
+  the chat partner and injected it into every reply. It (a) confused identity (invented/swapped
+  names), (b) the extractor kept *preserving* a bad profile verbatim, and (c) fed the rambling.
+  **Disabled** — the 100-turn context window is enough memory for a casual bot. (Re-enable via
+  `--profile-host`; the extraction prompt was also rewritten to keep only confirmed facts — no
+  "неизвестно" placeholders, no character judgements.) The `persona-embed` (bge-m3) service in
+  `docker-compose.yml` was the semantic-recall backend for this and is likewise idle.
+- **No-commitment filter.** A keyword deflector meant to stop the clone "promising money / signing"
+  fired on ordinary chatter ("выставлю комп по 20к **рублей**"). **Removed entirely.** PII
+  redaction (phone/email) stays.
+
+### Deploy topology as run
+
+- **8B** — main-PC GPU (RX 9070 XT), `q8_0 + --lora` on `:8090`; the bot on the LAN server points
+  at `http://<main-pc-ip>:8090`. Trade-off: the main PC must stay on.
+- **4B** — server GPU (6700XT) next to the vision model, `:8090` on the `botnet` network; the bot
+  reaches it by container name. No main-PC dependency → the default fallback.
 
 ---
 
