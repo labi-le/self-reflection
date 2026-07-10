@@ -41,6 +41,15 @@ nix-shell        # drops you into the dev shell with all aliases below
 
 Without Nix you need: Go 1.26+, and (for `--decode-media`) `ffmpeg` + `whisper-cli` on `PATH`, a whisper GGUF model, and a reachable vision server.
 
+### Models (HuggingFace)
+
+The optional decoders pull their models from HuggingFace:
+
+- **Vision (photos):** [`ggml-org/Qwen2.5-VL-7B-Instruct-GGUF`](https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF) — `fetch-models` downloads it; orig [`Qwen/Qwen2.5-VL-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct).
+- **Voice (whisper.cpp):** [`ggerganov/whisper.cpp`](https://huggingface.co/ggerganov/whisper.cpp) (e.g. `ggml-small.bin`).
+
+The separate persona Telegram bot fine-tunes on top of [`Qwen/Qwen3-4B`](https://huggingface.co/Qwen/Qwen3-4B) / [`Qwen/Qwen3-8B`](https://huggingface.co/Qwen/Qwen3-8B) — see [`docs/persona-finetune-guide.md`](docs/persona-finetune-guide.md) for the full model list and links.
+
 ## Quick start
 
 ```sh

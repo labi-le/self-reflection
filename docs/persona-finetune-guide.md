@@ -11,6 +11,23 @@ find.
 
 ---
 
+## Models (HuggingFace)
+
+The persona GGUFs (`persona-qwen3-4b-v2`, `persona-qwen3-8b-base`) are **private** — fine-tuned on a
+personal Telegram export, never published. What they are built from / served alongside is all
+off-the-shelf:
+
+| Role | Model (HuggingFace) |
+|---|---|
+| Persona base — **8B** (best) | [`Qwen/Qwen3-8B`](https://huggingface.co/Qwen/Qwen3-8B) |
+| Persona base — **4B** (fallback, currently live) | [`Qwen/Qwen3-4B`](https://huggingface.co/Qwen/Qwen3-4B) |
+| Persona base — original plan (superseded) | [`Qwen/Qwen2.5-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) |
+| Vision (photo → text) | [`ggml-org/Qwen2.5-VL-7B-Instruct-GGUF`](https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF) · orig [`Qwen/Qwen2.5-VL-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) |
+| Voice (whisper.cpp) | [`ggerganov/whisper.cpp`](https://huggingface.co/ggerganov/whisper.cpp) — e.g. `ggml-small.bin` |
+| Embedding (optional; the long-term memory, currently disabled) | [`BAAI/bge-m3`](https://huggingface.co/BAAI/bge-m3) |
+
+---
+
 ## 0. Pipeline at a glance
 
 ```
