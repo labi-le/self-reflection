@@ -1,0 +1,63 @@
+### LLaMA-Factory QLoRA SFT — Qwen3-8B-INSTRUCT persona v2 (bnb 4-bit) — FINAL overnight run
+###
+### Same validated v2 recipe as the shipped 4B (alpha=128 + cleaned data + identity + unified
+### Denis prompt), scaled to 8B for better coherence / less tail-garble. 8B needs 4-bit QLoRA to
+### fit 16 GB (bf16 no-quant is 16 GB weights alone).
+###
+### PREREQS (verified before launch): nightly torch 2.13+rocm7.13 in the container AND the bnb
+### symlink libbitsandbytes_rocm83.so -> libbitsandbytes_rocm72.so (bnb 0.49.2 ships only up to
+### rocm72; nightly HIP 7.13 looks for rocm83). Without the symlink bnb fails to load.
+### gfx1201 rules: NO HSA_OVERRIDE_GFX_VERSION; optim adamw_torch (paged/8bit -> NaN); flash_attn off.
+### Run: HIP_VISIBLE_DEVICES=0 HSA_ENABLE_COREDUMP=0 /opt/venv/bin/llamafactory-cli train finetune/configs/qlora_qwen3_8b_instruct_v2.yaml
+
+### model
+model_name_or_path: Qwen/Qwen3-8B
+trust_remote_code: true
+flash_attn: disabled
+quantization_bit: 4
+quantization_method: bnb
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 128
+lora_dropout: 0.10
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### dataset — v2 (cleaned persona + stripped instruct + identity, unified Denis prompt)
+dataset_dir: /app/finetune
+dataset: persona_sharegpt_premium2
+template: qwen3_nothink
+cutoff_len: 1024
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 2
+
+### output — 14h-class run: frequent checkpoints for resume-on-fault
+output_dir: saves/qwen3-8b-instruct-v2
+logging_steps: 10
+save_steps: 200
+save_total_limit: 6
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+optim: adamw_torch
+num_train_epochs: 2
+learning_rate: 5.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+seed: 42
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 200
