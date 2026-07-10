@@ -18,8 +18,8 @@ MODELS_HOST="/mnt/ssd2tb/llm/models"
 WORK_HOST="$MODELS_HOST/persona-build/$OUT"
 MERGED_HOST="$WORK_HOST/merged"          # -> /merged/model (HF fp16)
 GGUF_HOST="$WORK_HOST/gguf"              # -> gguf outputs
-MERGE_MEM="18g"
-CONV_MEM="12g"
+MERGE_MEM="${MERGE_MEM:-18g}"
+CONV_MEM="${CONV_MEM:-12g}"
 LOG="/tmp/tg2llm_build_${OUT}.log"
 
 log(){ echo "[$(date '+%F %T')] $*" | tee -a "$LOG" ; }
