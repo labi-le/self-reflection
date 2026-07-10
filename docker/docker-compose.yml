@@ -20,6 +20,41 @@ services:
       --image-max-tokens 1024
     restart: unless-stopped
 
+  # bge-m3 embedding server for the Telegram bot's long-term memory (semantic
+  # recall over ChromaDB). CPU-only on purpose: leaves the single GPU entirely to
+  # the persona model (persona-premium-web), and bge-m3 (560M) embeds a chat
+  # message in well under a second on CPU. Joins the external `botnet` so the bot
+  # reaches it by name at http://persona-embed:8092/v1/embeddings. This service is
+  # independent of the media pipeline above — start it standalone:
+  #   docker compose up -d embed
+  # --pooling cls: bge-m3 dense retrieval pools the [CLS] token. -ub 8192 lets a
+  # whole 8192-token input embed in one ubatch (llama.cpp requires n_ubatch >= the
+  # input length for embeddings).
+  embed:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: persona-embed
+    ports:
+      - "8092:8092"
+    volumes:
+      - ${MODELS_DIR:-/mnt/ssd2tb/llm/models}:/models
+    command: >
+      -m /models/bge-m3-FP16.gguf
+      --host 0.0.0.0 --port 8092
+      --embedding --pooling cls
+      -c 8192 -b 8192 -ub 8192
+      -t 4
+    # The image's built-in HEALTHCHECK is hardcoded to port 8080; override it to
+    # the port we actually serve on, else the container is wrongly "unhealthy".
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - botnet
+    restart: unless-stopped
+
   tg2llm:
     build:
       context: ..
@@ -90,3 +125,12 @@ services:
     # `docker compose run --rm finetune <cmd>` working (run overrides command).
     command: ["sleep", "infinity"]
     restart: "no"
+
+# `botnet` is the user-defined bridge created for the persona stack
+# (persona-premium-web + tg2llm-bot). Declared external so this compose joins the
+# existing network instead of creating its own — the bot resolves `persona-embed`
+# over it. Other services above have no `networks:` key, so they stay on this
+# compose's auto-created default network (unchanged).
+networks:
+  botnet:
+    external: true

@@ -12,3 +12,5 @@ result.json
 *.mp4
 .omo
 .idea
+finetune/output
+finetune/data

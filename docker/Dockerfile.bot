@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+
+# Stage 1: build the Go bot binary (modernc sqlite is pure-Go, so CGO stays off).
+FROM golang:1.26-bookworm AS gobuild
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/bot ./cmd/bot
+
+# Stage 2: build whisper.cpp's whisper-cli (voice/video transcription), statically linked.
+FROM debian:bookworm-slim AS whisperbuild
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential cmake ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# Target the deploy server's ISA (Zen3 / Ryzen 5600X: AVX2+FMA+F16C, NO AVX-512)
+# instead of the build host's. GGML_NATIVE=ON (-march=native) would bake in the
+# builder's AVX-512 and crash with SIGILL (exit 132) on the AVX2-only server, so
+# NATIVE is off and the exact supported features are enabled explicitly.
+RUN git clone --depth 1 https://github.com/ggml-org/whisper.cpp /whisper \
+    && cmake -S /whisper -B /whisper/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+        -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \
+    && cmake --build /whisper/build -j --target whisper-cli \
+    && cp /whisper/build/bin/whisper-cli /usr/local/bin/whisper-cli
+
+# Stage 3: runtime — bot binary + whisper-cli + ffmpeg (for voice/video decode).
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg ca-certificates libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=gobuild /out/bot /usr/local/bin/bot
+COPY --from=whisperbuild /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
+ENTRYPOINT ["/usr/local/bin/bot"]
