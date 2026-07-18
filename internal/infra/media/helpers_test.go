@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+
+	"tg2llm/internal/infra/kvcache"
 )
 
 var testLogger = zerolog.New(io.Discard)
@@ -22,4 +24,14 @@ func writeFile(t *testing.T, root, rel string) string {
 		t.Fatalf("write: %v", err)
 	}
 	return rel
+}
+
+// newCache opens a media_cache-backed kvcache at path, failing the test on error.
+func newCache(t *testing.T, path string) *kvcache.Cache {
+	t.Helper()
+	c, err := kvcache.New(path, "media_cache")
+	if err != nil {
+		t.Fatalf("kvcache.New: %v", err)
+	}
+	return c
 }

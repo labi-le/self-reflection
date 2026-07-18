@@ -10,6 +10,11 @@ finetune/output/
 
 # Media decode cache (Go SQLite)
 .tg2llm_media_cache.db*
+.tg2llm_analysis_cache.db*
+
+# Analysis outputs (sensitive personal inferences + verbatim quotes)
+portrait.json
+*.portrait.md
 
 # Go
 tg2llm
@@ -19,3 +24,4 @@ tg2llm
 # IDE / agent
 .idea/
 .omo/
+.superpowers/

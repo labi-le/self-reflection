@@ -120,7 +120,7 @@ func parseFlagsInto(args []string, raw *parsedFlags) (app.ParseOptions, []string
 		Jobs:            *jobs,
 
 		Format:        *format,
-		OwnerFromID:   normalizeOwnerID(*ownerUserID),
+		OwnerFromID:   dialogue.NormalizeOwnerID(*ownerUserID),
 		ChatScope:     *chatScope,
 		SessionGap:    *sessionGap,
 		CtxTurns:      *ctxTurns,
@@ -133,18 +133,6 @@ func parseFlagsInto(args []string, raw *parsedFlags) (app.ParseOptions, []string
 	return opts, fs.Args(), nil
 }
 
-// normalizeOwnerID turns a bare numeric telegram user id into the "user<N>"
-// prefixed form used throughout the export ("from_id"), and passes through
-// anything already prefixed (or empty).
-func normalizeOwnerID(v string) string {
-	if v == "" {
-		return ""
-	}
-	if _, err := strconv.ParseInt(v, 10, 64); err == nil {
-		return "user" + v
-	}
-	return v
-}
 
 // resolvePersonaSystem accepts either a literal system prompt or a path to a
 // file whose contents are the prompt. A leading "~" is expanded to $HOME

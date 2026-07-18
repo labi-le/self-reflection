@@ -18,7 +18,7 @@ func TestDecoderPhotoAndVoice(t *testing.T) {
 	describe := func(string) string { photoCalls++; return "a cat on a sofa" }
 	transcribe := func(string) string { voiceCalls++; return "привет мир" }
 
-	cache := NewCache(filepath.Join(root, "cache.db"), testLogger)
+	cache := newCache(t, filepath.Join(root, "cache.db"))
 	d := NewDecoder(root, transcribe, describe, cache, map[string]string{"photo": "v1", "voice": "v1"}, testLogger)
 
 	photoMsg := dialogue.Message{HasPhoto: true, PhotoPath: photoRel}
@@ -77,7 +77,7 @@ func TestDecoderEmptyResult(t *testing.T) {
 	root := t.TempDir()
 	rel := writeFile(t, root, "photos/p.jpg")
 	describe := func(string) string { return "   " } // whitespace -> trimmed to empty
-	d := NewDecoder(root, nil, describe, NewCache(filepath.Join(root, "c.db"), testLogger), nil, testLogger)
+	d := NewDecoder(root, nil, describe, newCache(t, filepath.Join(root, "c.db")), nil, testLogger)
 
 	msg := dialogue.Message{HasPhoto: true, PhotoPath: rel}
 	if got := d.Decode(msg); got != "" {
@@ -95,7 +95,7 @@ func TestDecoderVersionSalting(t *testing.T) {
 	msg := dialogue.Message{HasPhoto: true, PhotoPath: rel}
 
 	// Decoder A with photo version "modelA".
-	dA := NewDecoder(root, nil, describe, NewCache(cachePath, testLogger), map[string]string{"photo": "modelA"}, testLogger)
+	dA := NewDecoder(root, nil, describe, newCache(t, cachePath), map[string]string{"photo": "modelA"}, testLogger)
 	dA.Decode(msg)
 	if calls != 1 {
 		t.Fatalf("after A: calls=%d, want 1", calls)
@@ -103,7 +103,7 @@ func TestDecoderVersionSalting(t *testing.T) {
 	dA.Flush()
 
 	// Decoder B shares the cache file but uses a different photo version -> different key -> re-decode.
-	dB := NewDecoder(root, nil, describe, NewCache(cachePath, testLogger), map[string]string{"photo": "modelB"}, testLogger)
+	dB := NewDecoder(root, nil, describe, newCache(t, cachePath), map[string]string{"photo": "modelB"}, testLogger)
 	dB.Decode(msg)
 	if calls != 2 {
 		t.Fatalf("after B (different version): calls=%d, want 2 (no stale hit)", calls)
@@ -111,7 +111,7 @@ func TestDecoderVersionSalting(t *testing.T) {
 	dB.Flush()
 
 	// Decoder C reuses modelA version -> should hit the cache A wrote.
-	dC := NewDecoder(root, nil, describe, NewCache(cachePath, testLogger), map[string]string{"photo": "modelA"}, testLogger)
+	dC := NewDecoder(root, nil, describe, newCache(t, cachePath), map[string]string{"photo": "modelA"}, testLogger)
 	dC.Decode(msg)
 	if calls != 2 {
 		t.Fatalf("after C (version modelA): calls=%d, want 2 (cache hit expected)", calls)
@@ -126,7 +126,7 @@ func TestDecoderDedupByContentHash(t *testing.T) {
 
 	calls := 0
 	describe := func(string) string { calls++; return "same image" }
-	d := NewDecoder(root, nil, describe, NewCache(filepath.Join(root, "c.db"), testLogger), map[string]string{"photo": "v1"}, testLogger)
+	d := NewDecoder(root, nil, describe, newCache(t, filepath.Join(root, "c.db")), map[string]string{"photo": "v1"}, testLogger)
 
 	if got := d.Decode(dialogue.Message{HasPhoto: true, PhotoPath: relA}); got != "same image" {
 		t.Fatalf("decode A = %q", got)
@@ -156,7 +156,7 @@ func TestDecoderConcurrentSingleflight(t *testing.T) {
 		<-release             // hold the in-flight slot so concurrent callers must collapse onto it
 		return "one description"
 	}
-	d := NewDecoder(root, nil, describe, NewCache(filepath.Join(root, "c.db"), testLogger), map[string]string{"photo": "v1"}, testLogger)
+	d := NewDecoder(root, nil, describe, newCache(t, filepath.Join(root, "c.db")), map[string]string{"photo": "v1"}, testLogger)
 
 	msg := dialogue.Message{HasPhoto: true, PhotoPath: rel}
 	results := make([]string, n)

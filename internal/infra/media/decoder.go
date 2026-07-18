@@ -13,6 +13,7 @@ import (
 	"tg2llm/pkg/ctxlog"
 
 	"tg2llm/internal/domain/dialogue"
+	"tg2llm/internal/infra/kvcache"
 )
 
 // notIncluded is the placeholder text AyuGram uses for unavailable files.
@@ -40,7 +41,7 @@ type Decoder struct {
 	exportRoot    string
 	transcribeFn  TranscribeFunc
 	describeFn    DescribeFunc
-	cache         *Cache
+	cache         *kvcache.Cache
 	cacheVersions map[string]string
 	logger        zerolog.Logger
 
@@ -50,7 +51,7 @@ type Decoder struct {
 
 // NewDecoder creates a media decoder. Any of transcribeFn/describeFn/cache may be nil to disable
 // the corresponding functionality.
-func NewDecoder(exportRoot string, transcribeFn TranscribeFunc, describeFn DescribeFunc, cache *Cache, cacheVersions map[string]string, logger zerolog.Logger) *Decoder {
+func NewDecoder(exportRoot string, transcribeFn TranscribeFunc, describeFn DescribeFunc, cache *kvcache.Cache, cacheVersions map[string]string, logger zerolog.Logger) *Decoder {
 	if cacheVersions == nil {
 		cacheVersions = make(map[string]string)
 	}
@@ -102,7 +103,7 @@ func (d *Decoder) decodePath(rel string, fn func(string) string, kind string) st
 	}
 
 	if d.cache != nil {
-		if hit := d.cache.Get(key); hit != "" {
+		if hit, ok := d.cache.Get(key); ok {
 			return hit
 		}
 	}
@@ -144,7 +145,9 @@ func (d *Decoder) decodeOnce(key, absPath string, fn func(string) string, ctxLog
 	ctxLog.Info().Msg("decoding media")
 	text := strings.TrimSpace(fn(absPath))
 	if text != "" && d.cache != nil {
-		d.cache.Put(key, text)
+		if err := d.cache.Put(key, text); err != nil {
+			ctxLog.Warn().Err(err).Msg("cache put failed")
+		}
 	}
 	c.val = text
 	return text
@@ -197,7 +200,7 @@ func BuildDefaultDecoder(exportRoot, cachePath string, whisper *WhisperConfig, v
 	if whisper != nil && whisper.Model != "" {
 		t := NewTranscriber(whisper.Model, whisper.Bin, whisper.Lang, "ffmpeg", 600, logger)
 		transcribeFn = t.Transcribe
-		cacheVersions[kindVoice] = Signature(filepath.Base(whisper.Model), whisper.Lang)
+		cacheVersions[kindVoice] = kvcache.Signature(filepath.Base(whisper.Model), whisper.Lang)
 	}
 
 	if vision != nil {
@@ -206,15 +209,21 @@ func BuildDefaultDecoder(exportRoot, cachePath string, whisper *WhisperConfig, v
 			prompt = defaultVisionPrompt
 		}
 		describeFn = NewOpenAIDescriber(vision.Model, vision.Host, prompt, logger).Describe
-		cacheVersions[kindPhoto] = Signature(vision.Model, prompt)
+		cacheVersions[kindPhoto] = kvcache.Signature(vision.Model, prompt)
 	}
 
-	// The cache is optional: NewCache returns nil on any error and decoding simply
-	// proceeds uncached. (Contrast NewWriter, which returns an error because a
-	// missing output sink is fatal.)
-	var cache *Cache
+	// The cache is optional: on any open error decoding simply proceeds uncached.
+	// (Contrast NewWriter, which returns an error because a missing output sink
+	// is fatal.)
+	var cache *kvcache.Cache
 	if cachePath != "" {
-		cache = NewCache(cachePath, logger)
+		c, err := kvcache.New(cachePath, "media_cache")
+		if err != nil {
+			ctxLog := ctxlog.Op(logger, "BuildDefaultDecoder").With().Str("path", cachePath).Logger()
+			ctxLog.Warn().Err(err).Msg("cache open failed")
+		} else {
+			cache = c
+		}
 	}
 
 	return NewDecoder(exportRoot, transcribeFn, describeFn, cache, cacheVersions, logger)
