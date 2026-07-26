@@ -59,14 +59,14 @@ func parseFlagsInto(args []string, raw *parsedFlags) (app.ParseOptions, []string
 		fs.PrintDefaults()
 	}
 
-	decodeMedia := fs.Bool("decode-media", false, "transcribe voice messages and describe photos using local models")
-	whisperModel := fs.String("whisper-model", "", "path to a whisper.cpp GGUF model (required for voice transcription)")
+	decodeMedia := fs.Bool("decode-media", false, "transcribe voice messages + video notes and describe photos using local models")
+	whisperModel := fs.String("whisper-model", "", "path to a whisper.cpp GGUF model (required for voice + video-note transcription)")
 	whisperBin := fs.String("whisper-bin", "whisper-cli", "whisper.cpp binary")
 	whisperLang := fs.String("whisper-lang", "ru", "spoken language for transcription")
 	visionModel := fs.String("vision-model", "qwen2.5vl:7b", "vision model name sent to the server")
 	visionHost := fs.String("vision-host", "http://localhost:8080", "vision server base URL (llama.cpp/OpenAI-compatible /v1/chat/completions)")
-	visionPrompt := fs.String("vision-prompt", "", "prompt sent to the vision model")
-	mediaCache := fs.String("media-cache", "", "decoded-media cache file")
+	visionPrompt := fs.String("vision-prompt", "", "prompt sent to the vision model; overrides BOTH the photo and the video-note-frame defaults")
+	mediaCache := fs.String("media-cache", "", "decoded-media cache db (default $TG2LLM_CACHE_DIR, else <project>/cache, else ~/.cache/tg2llm; file media.db)")
 	jobs := fs.Int("jobs", 3, "parallel media-decode workers (1 = sequential)")
 	dateFrom := fs.String("date-from", "", "skip messages before this date (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
 	dateTo := fs.String("date-to", "", "skip messages after this date (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
@@ -204,7 +204,7 @@ func run(args []string) error {
 		exportRoot := filepath.Dir(abspath(inputPath))
 		cachePath := raw.mediaCache
 		if cachePath == "" {
-			cachePath = filepath.Join(exportRoot, ".tg2llm_media_cache.db")
+			cachePath = media.DefaultCachePath()
 		}
 
 		if raw.whisperModel == "" {

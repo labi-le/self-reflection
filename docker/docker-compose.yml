@@ -63,9 +63,18 @@ services:
     container_name: tg2llm
     depends_on:
       - vision
+    environment:
+      # Share the checkout's cache dir so container and host runs reuse one
+      # decoded-media database (there is no go.mod in the image to anchor on).
+      TG2LLM_CACHE_DIR: /cache
+    # Write /cache and /export as the invoking user (see docker/Makefile and the
+    # dev shell): a root-owned cache database cannot be reopened by host runs, and
+    # decoding then silently falls back to uncached.
+    user: "${TG2LLM_UID:-1000}:${TG2LLM_GID:-1000}"
     volumes:
       - ${EXPORT_DIR:-/home/labile/Downloads/ChatExport_2026-06-25}:/export
       - ${WHISPER_MODEL:-/home/labile/.cache/whisper-cpp/ggml-small.bin}:/models/whisper.bin:ro
+      - ../cache:/cache
     entrypoint: ["/usr/local/bin/parse"]
     command: >
       --decode-media

@@ -3,6 +3,7 @@
 *.txt
 parsed_dialogue.txt
 dialogue.txt
+cache/
 .tg2llm_media_cache.db*
 docker/
 result.json

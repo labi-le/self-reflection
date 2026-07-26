@@ -132,6 +132,7 @@ func (c *collector) collect(chatType, chatID string, rawMsgs []interface{}) {
 			StickerEmoji:    getString(m, "sticker_emoji"),
 			PhotoPath:       getString(m, "photo"),
 			FilePath:        getString(m, "file"),
+			ThumbnailPath:   getString(m, "thumbnail"),
 			FromID:          getString(m, "from_id"),
 			ActorID:         getString(m, "actor_id"),
 			ChatType:        chatType,

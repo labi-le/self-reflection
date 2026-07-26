@@ -8,7 +8,12 @@ questions.txt
 finetune/data/
 finetune/output/
 
-# Media decode cache (Go SQLite)
+# Shared cache dir: decoded media + analysis fragments (Go SQLite)
+cache/*
+!cache/.gitkeep
+
+# Legacy per-export cache files (pre <project>/cache): keep ignored so an old
+# database of decoded private media can never be committed by accident.
 .tg2llm_media_cache.db*
 .tg2llm_analysis_cache.db*
 

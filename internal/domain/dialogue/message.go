@@ -18,7 +18,8 @@ type Message struct {
 	MediaType       string
 	StickerEmoji    string
 	PhotoPath       string // value of "photo" key (relative path for media decode)
-	FilePath        string // value of "file" key (relative path for voice decode)
+	FilePath        string // value of "file" key (relative path for voice/video decode)
+	ThumbnailPath   string // value of "thumbnail" key (video-note frame for vision decode)
 
 	// Identity & dataset fields (populated by Task 2/4; unused by the base text
 	// pipeline). Kept as prefixed strings (e.g. "user123456789", "channel1001…")

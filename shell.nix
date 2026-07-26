@@ -19,6 +19,19 @@ pkgs.mkShell {
   shellHook = ''
     export GOTOOLCHAIN=local
     root="${toString ./.}"
+
+    # Anchor the shared cache on the checkout unless the caller already chose a
+    # location: the aliases below run the binary in YOUR directory (usually the
+    # export dir, outside the module), so without this every directory would grow
+    # its own cache/. It must exist before Docker binds it, or the daemon creates
+    # it root-owned and the container cannot write.
+    export TG2LLM_CACHE_DIR="''${TG2LLM_CACHE_DIR:-$root/cache}"
+    mkdir -p -m 700 "$TG2LLM_CACHE_DIR"
+    # The Docker services write into that same dir; without a uid they write as
+    # root and the host can no longer open the database. (UID is readonly in bash,
+    # hence the prefixed names.)
+    export TG2LLM_UID="$(id -u)"
+    export TG2LLM_GID="$(id -g)"
     bindir="$HOME/.cache/tg2llm"
     mkdir -p "$bindir"
 
@@ -49,12 +62,13 @@ pkgs.mkShell {
 
     echo "tg2llm dev shell (Go)"
     echo "  parse <export.json> [out.txt]          convert a Telegram export"
-    echo "  parse-media <export.json> [out.txt]    + transcribe voice & describe photos"
+    echo "  parse-media <export.json> [out.txt]    + transcribe voice & video notes, describe photos"
     echo "  gotest                                 run Go tests"
     echo "  fetch-models                           download Qwen2.5-VL GGUF + mmproj (Docker vision)"
     echo "  vision-up / vision-logs / vision-down  llama.cpp vision server in Docker (GPU, port 8080)"
     echo "  tg-build / tg-run                      build & run the parser in Docker"
     echo "  date filter: parse --date-from 2026-06-20 [--date-to 2026-06-23] result.json out.txt"
+    echo "  shared cache: $TG2LLM_CACHE_DIR (parse, analyze and the Docker services)"
     echo "  (Go: put --flags BEFORE the input/output paths)"
   '';
 }

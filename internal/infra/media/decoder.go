@@ -24,9 +24,21 @@ const defaultVisionPrompt = "Опиши, что изображено на кар
 	"Если это мем или шутка — кратко объясни смысл; если нет — про мемы не упоминай. " +
 	"Ответь одним абзацем, без переносов строк."
 
+// defaultFramePrompt describes the frame of a video note. It drops the photo
+// prompt's "transfer all the text" and meme clauses: a video note is a talking
+// head, and demanding text or a joke makes the model pad every description with
+// a sentence about what the frame does not contain.
+const defaultFramePrompt = "Опиши одним абзацем, что видно в кадре видеосообщения: кто в кадре и что вокруг. " +
+	"Не упоминай то, чего в кадре нет. Ответь без переносов строк."
+
 const (
 	kindPhoto = "photo"
 	kindVoice = "voice"
+	kindFrame = "frame"
+
+	// Telegram export "media_type" values this decoder acts on.
+	mediaVoice     = "voice_message"
+	mediaVideoNote = "video_message" // round video note
 )
 
 // TranscribeFunc is the signature for a voice transcription backend.
@@ -35,51 +47,84 @@ type TranscribeFunc func(absPath string) string
 // DescribeFunc is the signature for a photo description backend.
 type DescribeFunc func(absPath string) string
 
+// DescribeFrameFunc is the signature for a video-note frame description backend.
+// It is distinct from DescribeFunc so the two describers cannot be transposed at a
+// call site: they carry different prompts and different cache salts.
+type DescribeFrameFunc func(absPath string) string
+
 // Decoder implements app.MediaDecoder. It resolves media files relative to the export root
-// and decodes them using injected backends (transcribeFn for voice, describeFn for photo).
+// and decodes them using injected backends (transcribeFn for voice and video-note audio,
+// describeFn for photos, describeFrameFn for video-note frames).
 type Decoder struct {
-	exportRoot    string
-	transcribeFn  TranscribeFunc
-	describeFn    DescribeFunc
-	cache         *kvcache.Cache
-	cacheVersions map[string]string
-	logger        zerolog.Logger
+	exportRoot      string
+	transcribeFn    TranscribeFunc
+	describeFn      DescribeFunc
+	describeFrameFn DescribeFrameFunc
+	cache           *kvcache.Cache
+	cacheVersions   map[string]string
+	logger          zerolog.Logger
 
 	mu       sync.Mutex
 	inflight map[string]*inflightCall
 }
 
-// NewDecoder creates a media decoder. Any of transcribeFn/describeFn/cache may be nil to disable
-// the corresponding functionality.
-func NewDecoder(exportRoot string, transcribeFn TranscribeFunc, describeFn DescribeFunc, cache *kvcache.Cache, cacheVersions map[string]string, logger zerolog.Logger) *Decoder {
+// NewDecoder creates a media decoder. Any of the backends or the cache may be nil to
+// disable the corresponding functionality.
+func NewDecoder(exportRoot string, transcribeFn TranscribeFunc, describeFn DescribeFunc, describeFrameFn DescribeFrameFunc, cache *kvcache.Cache, cacheVersions map[string]string, logger zerolog.Logger) *Decoder {
 	if cacheVersions == nil {
 		cacheVersions = make(map[string]string)
 	}
 	logger = logger.With().Str("component", "media-decoder").Logger()
 	return &Decoder{
-		exportRoot:    exportRoot,
-		transcribeFn:  transcribeFn,
-		describeFn:    describeFn,
-		cache:         cache,
-		cacheVersions: cacheVersions,
-		logger:        logger,
-		inflight:      make(map[string]*inflightCall),
+		exportRoot:      exportRoot,
+		transcribeFn:    transcribeFn,
+		describeFn:      describeFn,
+		describeFrameFn: describeFrameFn,
+		cache:           cache,
+		cacheVersions:   cacheVersions,
+		logger:          logger,
+		inflight:        make(map[string]*inflightCall),
 	}
 }
 
 // Decode attempts to decode a media message. Returns "" if no decoding is applicable or fails.
+// The media_type cases come first: they name the medium exactly, while HasPhoto is the
+// fallback for a message carrying only a "photo" key.
 func (d *Decoder) Decode(msg dialogue.Message) string {
-	if msg.HasPhoto && d.describeFn != nil {
-		log := ctxlog.Op(d.logger, "Decoder.Decode")
-		log.Trace().Object("msg", msg).Msg("decode requested")
+	switch {
+	case msg.MediaType == mediaVoice && d.transcribeFn != nil:
+		d.traceRequest(msg)
+		return d.decodePath(msg.FilePath, d.transcribeFn, kindVoice)
+	case msg.MediaType == mediaVideoNote && (d.transcribeFn != nil || d.describeFrameFn != nil):
+		d.traceRequest(msg)
+		return d.decodeVideoNote(msg)
+	case msg.HasPhoto && d.describeFn != nil:
+		d.traceRequest(msg)
 		return d.decodePath(msg.PhotoPath, d.describeFn, kindPhoto)
 	}
-	if msg.MediaType == "voice_message" && d.transcribeFn != nil {
-		log := ctxlog.Op(d.logger, "Decoder.Decode")
-		log.Trace().Object("msg", msg).Msg("decode requested")
-		return d.decodePath(msg.FilePath, d.transcribeFn, kindVoice)
-	}
 	return ""
+}
+
+// traceRequest is called per decoded branch rather than once at entry so a plain
+// text message never pays for building a sub-logger.
+func (d *Decoder) traceRequest(msg dialogue.Message) {
+	log := ctxlog.Op(d.logger, "Decoder.Decode")
+	log.Trace().Object("msg", msg).Msg("decode requested")
+}
+
+// decodeVideoNote decodes a round video message: whisper transcribes the audio
+// track of the video file and the vision backend describes the frame Telegram
+// exported as its thumbnail. Each half is keyed under its own backend's kind, so
+// enabling vision later still reuses the transcripts already cached.
+func (d *Decoder) decodeVideoNote(msg dialogue.Message) string {
+	var transcript, desc string
+	if d.transcribeFn != nil {
+		transcript = d.decodePath(msg.FilePath, d.transcribeFn, kindVoice)
+	}
+	if d.describeFrameFn != nil {
+		desc = d.decodePath(msg.ThumbnailPath, d.describeFrameFn, kindFrame)
+	}
+	return CombineVideo(desc, transcript)
 }
 
 func (d *Decoder) decodePath(rel string, fn func(string) string, kind string) string {
@@ -189,12 +234,20 @@ type VisionConfig struct {
 	Prompt string
 }
 
+// DefaultCachePath is the decoded-media database inside the shared cache
+// directory. Every command and every export share it: media is keyed by content
+// hash, so a file already decoded for one run is never decoded again.
+func DefaultCachePath() string {
+	return kvcache.SharedPath("media.db")
+}
+
 // BuildDefaultDecoder wires whisper.cpp + the vision backend into a Decoder. A nil
 // whisper (or one with an empty Model) disables voice transcription; a nil vision
-// disables photo description.
+// disables photo and video-note-frame description.
 func BuildDefaultDecoder(exportRoot, cachePath string, whisper *WhisperConfig, vision *VisionConfig, logger zerolog.Logger) *Decoder {
 	var transcribeFn TranscribeFunc
 	var describeFn DescribeFunc
+	var describeFrameFn DescribeFrameFunc
 	cacheVersions := map[string]string{}
 
 	if whisper != nil && whisper.Model != "" {
@@ -204,12 +257,16 @@ func BuildDefaultDecoder(exportRoot, cachePath string, whisper *WhisperConfig, v
 	}
 
 	if vision != nil {
-		prompt := vision.Prompt
-		if prompt == "" {
-			prompt = defaultVisionPrompt
+		// An explicit --vision-prompt drives both media; only the defaults differ,
+		// because a video-note frame answers a different question than a photo.
+		photoPrompt, framePrompt := vision.Prompt, vision.Prompt
+		if vision.Prompt == "" {
+			photoPrompt, framePrompt = defaultVisionPrompt, defaultFramePrompt
 		}
-		describeFn = NewOpenAIDescriber(vision.Model, vision.Host, prompt, logger).Describe
-		cacheVersions[kindPhoto] = kvcache.Signature(vision.Model, prompt)
+		describeFn = NewOpenAIDescriber(vision.Model, vision.Host, photoPrompt, logger).Describe
+		describeFrameFn = NewOpenAIDescriber(vision.Model, vision.Host, framePrompt, logger).Describe
+		cacheVersions[kindPhoto] = kvcache.Signature(vision.Model, photoPrompt)
+		cacheVersions[kindFrame] = kvcache.Signature(vision.Model, framePrompt)
 	}
 
 	// The cache is optional: on any open error decoding simply proceeds uncached.
@@ -217,14 +274,18 @@ func BuildDefaultDecoder(exportRoot, cachePath string, whisper *WhisperConfig, v
 	// is fatal.)
 	var cache *kvcache.Cache
 	if cachePath != "" {
+		ctxLog := ctxlog.Op(logger, "BuildDefaultDecoder").With().Str("path", cachePath).Logger()
 		c, err := kvcache.New(cachePath, "media_cache")
 		if err != nil {
-			ctxLog := ctxlog.Op(logger, "BuildDefaultDecoder").With().Str("path", cachePath).Logger()
 			ctxLog.Warn().Err(err).Msg("cache open failed")
 		} else {
 			cache = c
+			// The path is resolved from $TG2LLM_CACHE_DIR / the checkout / the user
+			// cache dir, so log which one won: a surprise full re-decode is otherwise
+			// invisible.
+			ctxLog.Info().Msg("decoded-media cache")
 		}
 	}
 
-	return NewDecoder(exportRoot, transcribeFn, describeFn, cache, cacheVersions, logger)
+	return NewDecoder(exportRoot, transcribeFn, describeFn, describeFrameFn, cache, cacheVersions, logger)
 }

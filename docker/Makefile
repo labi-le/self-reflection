@@ -18,8 +18,10 @@ build:
 
 # Run the parser against the export (vision via GPU server, voice via bundled whisper-cli).
 # Override paths with env vars, e.g.: make run EXPORT_DIR=/path/to/ChatExport
+# TG2LLM_UID/GID keep the shared ../cache and the output file owned by you, not root.
 run:
-	$(COMPOSE) run --rm tg2llm
+	mkdir -p -m 700 ../cache
+	TG2LLM_UID=$$(id -u) TG2LLM_GID=$$(id -g) $(COMPOSE) run --rm tg2llm
 
 status:
 	docker ps | grep tg2llm

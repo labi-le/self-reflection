@@ -234,12 +234,12 @@ func sortedSenders(stats portrait.Stats) []string {
 }
 
 // buildDecoder assembles the media decoder for --decode-media, mirroring
-// cmd/parse's wiring: default cache beside the export, ~ expansion of the
-// whisper model, and a warning when the voice model is unset.
+// cmd/parse's wiring: the shared media cache, ~ expansion of the whisper model,
+// and a warning when the voice model is unset.
 func buildDecoder(input, cachePath, whisperModel, whisperBin, whisperLang, visionModel, visionHost, visionPrompt string, logger zerolog.Logger) *media.Decoder {
 	exportRoot := filepath.Dir(abspath(input))
 	if cachePath == "" {
-		cachePath = filepath.Join(exportRoot, ".tg2llm_media_cache.db")
+		cachePath = media.DefaultCachePath()
 	}
 	if whisperModel == "" {
 		logger.Warn().Msg("whisper model not set; voice messages stay undecoded")

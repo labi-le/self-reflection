@@ -76,3 +76,28 @@ func TestReadMessagesInvalidJSON(t *testing.T) {
 		t.Fatal("invalid JSON: err = nil, want error")
 	}
 }
+
+func TestReadMessagesVideoNote(t *testing.T) {
+	payload := `{"messages":[
+		{"id":9,"type":"message","date":"2026-06-19T10:00:00","from":"Alice","media_type":"video_message",
+		 "file":"round_video_messages/v.mp4","thumbnail":"round_video_messages/v_thumb.jpg",
+		 "mime_type":"video/mp4","duration_seconds":7,"text":""}
+	]}`
+	msgs, _, err := NewReader(writeJSON(t, payload), zerolog.New(io.Discard)).ReadMessages()
+	if err != nil {
+		t.Fatalf("ReadMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len = %d, want 1", len(msgs))
+	}
+	got := msgs[0]
+	if got.MediaType != "video_message" || got.FilePath != "round_video_messages/v.mp4" {
+		t.Errorf("media = %q %q, want video_message + file path", got.MediaType, got.FilePath)
+	}
+	if got.ThumbnailPath != "round_video_messages/v_thumb.jpg" {
+		t.Errorf("thumbnail = %q, want the exported frame path", got.ThumbnailPath)
+	}
+	if got.HasPhoto || got.PhotoPath != "" {
+		t.Errorf("HasPhoto=%v PhotoPath=%q, want neither: a video note carries no photo key", got.HasPhoto, got.PhotoPath)
+	}
+}

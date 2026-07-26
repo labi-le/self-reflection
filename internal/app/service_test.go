@@ -55,22 +55,26 @@ func assertEqual(t *testing.T, got, want string) {
 	}
 }
 
-// FIXTURE: voice transcript, photo description,
-// photo+caption combine, and an undecoded video dropped as useless.
+// FIXTURE: voice transcript, photo description, photo+caption combine, a decoded
+// video note, and undecoded video / video note dropped as useless.
 func TestServiceMediaIntegration(t *testing.T) {
 	msgs := []dialogue.Message{
 		{ID: 1, Date: ts(10, 0, 0), Sender: "A", MediaType: "voice_message", FilePath: "voice/a.ogg"},
 		{ID: 2, Date: ts(10, 1, 0), Sender: "B", HasPhoto: true, PhotoPath: "photos/p.jpg"},
 		{ID: 3, Date: ts(10, 2, 0), Sender: "A", HasPhoto: true, PhotoPath: "photos/q.jpg", ExtractedText: "смотри сюда"},
 		{ID: 4, Date: ts(10, 3, 0), Sender: "B", MediaType: "video_file", FilePath: "video/v.mp4"},
+		{ID: 5, Date: ts(10, 4, 0), Sender: "A", MediaType: "video_message", FilePath: "round/v.mp4", ThumbnailPath: "round/v.jpg"},
+		{ID: 6, Date: ts(10, 5, 0), Sender: "B", MediaType: "video_message", FilePath: "round/w.mp4"},
 	}
-	dec := fakeDecoder{out: map[int]string{1: "hello world", 2: "a cat", 3: "a dog"}} // 4 -> "" (video skipped)
+	// 4 and 6 decode to "" -> bare placeholders -> dropped.
+	dec := fakeDecoder{out: map[int]string{1: "hello world", 2: "a cat", 3: "a dog", 5: "кадр Речь: привет"}}
 	got := runService(t, fakeSource{msgs: msgs}, dec, app.ParseOptions{ShowDateHeaders: true})
 
 	assertEqual(t, got, "\n=== 2026-06-19 ===\n"+
 		"[1] [10:00:00] A: [voice_message: hello world]\n"+
 		"[2] [10:01:00] B: [photo: a cat]\n"+
-		"[3] [10:02:00] A: смотри сюда [photo: a dog]\n")
+		"[3] [10:02:00] A: смотри сюда [photo: a dog]\n"+
+		"[5] [10:04:00] A: [video_message: кадр Речь: привет]\n")
 }
 
 func TestServiceUselessUnlessReferenced(t *testing.T) {

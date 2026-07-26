@@ -1,18 +1,18 @@
 # tg2llm
 
-Convert a Telegram JSON export into a clean, LLM-friendly plain-text dialogue — with optional **local** media decoding: voice messages are transcribed (whisper.cpp) and photos are described (a vision model), so the whole conversation becomes readable text.
+Convert a Telegram JSON export into a clean, LLM-friendly plain-text dialogue — with optional **local** media decoding: voice messages and video notes (кружки) are transcribed (whisper.cpp) while photos and video-note frames are described (a vision model), so the whole conversation becomes readable text.
 
 Written in Go (hexagonal architecture), stdlib-first; the only third-party dependencies are a pure-Go SQLite driver and zerolog.
 
 ## Features
 
 - **Plain-text dialogue** from `result.json` with per-day headers, timestamps, replies and forwards.
-- **Voice transcription** via [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`whisper-cli`, runs locally).
-- **Photo description / OCR** via a vision model on any **OpenAI-compatible** server (e.g. [llama.cpp](https://github.com/ggml-org/llama.cpp) `server`, which can run on an AMD/Intel GPU via Vulkan).
-- **SQLite cache** keyed by file **content hash** (sha256): identical media is decoded once; reruns skip already-decoded media; failed/empty results are *not* cached, so a rerun retries only them.
+- **Voice & video-note transcription** via [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`whisper-cli`, runs locally).
+- **Photo & video-note-frame description / OCR** via a vision model on any **OpenAI-compatible** server (e.g. [llama.cpp](https://github.com/ggml-org/llama.cpp) `server`, which can run on an AMD/Intel GPU via Vulkan).
+- **Shared SQLite cache** (`<project>/cache/`) keyed by file **content hash** (sha256): identical media is decoded once, no matter which export or command asked for it; reruns skip already-decoded media; failed/empty results are *not* cached, so a rerun retries only them.
 - **Parallel decoding** (`--jobs`) with a worker pool + in-flight de-duplication; output order is always preserved.
 - **Date filtering** (`--date-from` / `--date-to`) to skip the beginning (or end) of a long chat.
-- **Docker deployment** for GPU-accelerated photo description (llama.cpp + Vulkan).
+- **Docker deployment** for GPU-accelerated image description (llama.cpp + Vulkan).
 - Everything runs **offline / locally** — no data leaves your machine.
 
 ## Output format
@@ -23,13 +23,15 @@ Written in Go (hexagonal architecture), stdlib-first; the only third-party depen
 [102] [09:16:10] Bob: [Forwarded from Carol]: meeting moved to 4pm
 [103] [09:20:29] Bob: here's the new layout [photo: A wireframe with a header, a sidebar on the left and a content area on the right ...]
 [104] [09:22:39] Alice (reply to 103): [voice_message: Looks good, let's ship it ...]
+[105] [09:25:01] Bob: [video_message: A person walking along a rainy street Речь: heading over now, ten minutes ...]
 ```
 
 - Day separators: `=== YYYY-MM-DD ===`
 - Messages: `[id] [HH:MM:SS] sender: text`
 - Replies: `sender (reply to <id>)`
 - Forwards: `[Forwarded from <name>]: ...`
-- Decoded media: `[photo: <description>]`, `[voice_message: <transcript>]` (a caption is kept and combined with the tag)
+- Decoded media: `[photo: <description>]`, `[voice_message: <transcript>]`, `[video_message: <frame description> Речь: <transcript>]` (a caption is kept and combined with the tag)
+- Dropped: a message whose whole text is a bare media placeholder (`[photo]`, `[voice_message]`, `[video_message]`, `[video_file]`, `[audio_file]`, `[animation]`, `[<emoji> Sticker]`) or a bare URL, unless another message replies to it — so without `--decode-media` a caption-less video note produces no line at all.
 
 ## Requirements
 
@@ -69,7 +71,7 @@ The dev shell exposes these aliases (see the banner printed on entry):
 | alias | what it does |
 |-------|--------------|
 | `parse <in.json> [out.txt]` | convert an export to text |
-| `parse-media <in.json> [out.txt]` | + transcribe voice & describe photos |
+| `parse-media <in.json> [out.txt]` | + transcribe voice & video notes, describe photos |
 | `gotest` | run the Go test suite |
 | `fetch-models` | download the Qwen2.5-VL GGUF + mmproj (for the Docker vision server) |
 | `vision-up` / `vision-logs` / `vision-down` | manage the llama.cpp vision server in Docker (GPU, port 8080) |
@@ -85,26 +87,26 @@ Usage: parse [flags] <input.json> [output.txt]
 
 | flag | default | description |
 |------|---------|-------------|
-| `--decode-media` | `false` | transcribe voice messages and describe photos |
-| `--whisper-model` | `""` | path to a whisper.cpp GGUF model (**required** for voice) |
+| `--decode-media` | `false` | transcribe voice messages + video notes, describe photos |
+| `--whisper-model` | `""` | path to a whisper.cpp GGUF model (**required** for voice + video notes) |
 | `--whisper-bin` | `whisper-cli` | whisper.cpp binary |
 | `--whisper-lang` | `ru` | spoken language for transcription |
 | `--vision-model` | `qwen2.5vl:7b` | vision model name sent to the server |
 | `--vision-host` | `http://localhost:8080` | vision server base URL (OpenAI-compatible `/v1/chat/completions`, e.g. llama.cpp) |
-| `--vision-prompt` | *(built-in RU prompt)* | prompt sent to the vision model |
-| `--media-cache` | `<export-dir>/.tg2llm_media_cache.db` | decoded-media cache file |
+| `--vision-prompt` | *(built-in RU prompts)* | prompt sent to the vision model; overrides both the photo and the video-note-frame default |
+| `--media-cache` | `<project>/cache/media.db` | decoded-media cache db; the directory is `$TG2LLM_CACHE_DIR`, else `<project>/cache`, else `~/.cache/tg2llm` |
 | `--jobs` | `3` | parallel media-decode workers (`1` = sequential) |
 | `--date-from` | `""` | skip messages before this date (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS`) |
 | `--date-to` | `""` | skip messages after this date (date-only includes the whole day) |
 | `--verbose` | `false` | trace-level logging with caller info |
-| `--format` | `text` | output format: `text` (today's plain-text dialogue) or `chatml` (LLM-training JSONL; wired in later tasks) |
+| `--format` | `text` | output format: `text` (plain-text dialogue) or `chatml` (LLM-training JSONL) |
 | `--owner-user-id` | `""` | sender id treated as the "assistant" side in `chatml` mode. Bare number `N` is expanded to `user<N>`; already-prefixed values (e.g. `user123`) pass through unchanged. |
 | `--chat-scope` | `personal` | which chat types to include: `personal` (personal chats only) or `all` |
 | `--session-gap` | `30m` | gap between consecutive messages that starts a new session in `chatml` mode |
 | `--ctx-turns` | `6` | context turns to prepend when materialising each training example |
 | `--cutoff-len` | `1024` | per-example length cap used to bound context turns |
 | `--max-per-chat` | `4000` | cap of examples per chat (`0` = unlimited) |
-| `--persona-system` | `""` | explicit system prompt for `chatml` mode: either a literal string or a path to a file. A leading `~` is expanded to `$HOME` (same as `--whisper-model`). |
+| `--persona-system` | *(the locked persona prompt)* | system prompt for `chatml` mode: either a literal string or a path to a file. A leading `~` is expanded to `$HOME` (same as `--whisper-model`); pass `""` to emit no system turn. |
 | `--burst-delim` | `\u2063` | delimiter joining consecutive same-sender messages inside a burst (default: U+2063 INVISIBLE SEPARATOR) |
 
 ### Examples
@@ -128,22 +130,26 @@ parse --decode-media --vision-host http://localhost:8080 \
 `--decode-media` turns each supported media message into text:
 
 - **Voice** (`voice_message`) → `ffmpeg` converts the `.ogg` to 16 kHz WAV, then `whisper-cli` transcribes it. Requires `--whisper-model` (a whisper GGUF, e.g. `ggml-small.bin`).
+- **Video notes / кружки** (`video_message`) → both halves: `whisper-cli` transcribes the `.mp4` audio track and the vision model describes the frame Telegram exported as the message's `thumbnail`, rendered as `<description> Речь: <transcript>`. A half whose backend or file is missing is simply left out.
 - **Photos** → sent (base64) to the vision server and replaced with its description. The server is any OpenAI-compatible vision endpoint (POST `/v1/chat/completions`: llama.cpp `server`, vLLM, …), set via `--vision-host`. This is what the Docker setup uses for **GPU** acceleration.
 
 Any backend error is logged (`--verbose` for detail) and the message is left undecoded rather than crashing the run.
 
 ### Caching
 
-Decoded results are stored in a SQLite database (default `<export-dir>/.tg2llm_media_cache.db`) keyed by `kind:sha256(file):model-signature`:
+Decoded results are stored in a SQLite database shared by every command and every export — `<project>/cache/media.db` by default, with `$TG2LLM_CACHE_DIR` overriding the directory and `--media-cache` the file — keyed by `kind:sha256(file):model-signature` where `kind` is `photo`, `voice` or `frame`:
 
 - identical-content media is decoded **once** (content-hash dedup),
 - reruns skip already-decoded media,
 - changing the model/prompt invalidates the relevant entries,
 - empty/failed results are **not** cached, so a rerun retries only those.
 
-## Docker (GPU photo description)
+**Migrating an older cache.** Before the shared cache dir, decoded media lived in `<export-dir>/.tg2llm_media_cache.db`. The table (`media_cache`) and the key format are unchanged, so the work is still usable: copy that file to `cache/media.db`, or merge it with
+`sqlite3 cache/media.db "CREATE TABLE IF NOT EXISTS media_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL); ATTACH '<export>/.tg2llm_media_cache.db' AS old; INSERT OR IGNORE INTO main.media_cache SELECT * FROM old.media_cache;"` — the `CREATE` and the `main.` prefix matter: without them an unqualified `media_cache` binds to the attached legacy file and nothing is migrated. (`sqlite3` is not in the dev shell: `nix-shell -p sqlite`.) Otherwise the first run after upgrading re-decodes everything.
 
-The [`docker/`](docker/) directory runs the photo-description model on a GPU via llama.cpp (Vulkan) and, optionally, the parser itself. See [`docker/README.md`](docker/README.md) for details.
+## Docker (GPU image description)
+
+The [`docker/`](docker/) directory runs the vision model on a GPU via llama.cpp (Vulkan) and, optionally, the parser itself. See [`docker/README.md`](docker/README.md) for details.
 
 ```sh
 # download the vision model into your models dir (default /mnt/ssd2tb/llm/models)
@@ -169,7 +175,8 @@ internal/app/              ParseService orchestration, ports, parallel decode po
 internal/infra/
   tgexport/                read the Telegram/AyuGram JSON export
   textsink/                write the dialogue text
-  media/                   SQLite cache, decoder, whisper + OpenAI vision backend
+  media/                   decoder (photo / voice / video note), whisper + OpenAI vision backends
+  kvcache/                 content-hash SQLite cache + shared cache-dir resolution
 pkg/ctxlog/                operation-scoped zerolog helper
 ```
 

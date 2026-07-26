@@ -13,6 +13,7 @@ var exactUseless = map[string]bool{
 	"[photo]":         true,
 	"[voice_message]": true,
 	"[video_file]":    true,
+	"[video_message]": true,
 	"[audio_file]":    true,
 	"[animation]":     true,
 }

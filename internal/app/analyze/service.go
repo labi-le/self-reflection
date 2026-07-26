@@ -282,7 +282,7 @@ func (s *AnalyzeService) mapDynamics(ctx context.Context, da DynamicsAnalyzer, c
 // miss calls the analyzer and memoises a non-empty result. An analyzer error
 // yields analyzed=false so the chunk is dropped from coverage.
 func (s *AnalyzeService) mapChunk(ctx context.Context, c portrait.Chunk, target string) (portrait.Fragment, bool) {
-	key := s.cacheKey(c)
+	key := s.cacheKey(c, target)
 	if v, ok := s.cache.Get(key); ok {
 		var frag portrait.Fragment
 		if err := json.Unmarshal([]byte(v), &frag); err == nil {
@@ -295,15 +295,25 @@ func (s *AnalyzeService) mapChunk(ctx context.Context, c portrait.Chunk, target 
 	}
 	if !fragmentEmpty(frag) {
 		if b, err := json.Marshal(frag); err == nil {
-			_ = s.cache.Put(key, string(b))
+			// A cache that cannot be written (read-only file, full disk) still
+			// serves hits, so this is a warning, not a failure — but it must be
+			// visible: every run would otherwise re-call the LLM for free.
+			if err := s.cache.Put(key, string(b)); err != nil {
+				s.logger.Warn().Err(err).Msg("analysis cache put failed")
+			}
 		}
 	}
 	return frag, true
 }
 
-func (s *AnalyzeService) cacheKey(c portrait.Chunk) string {
+// cacheKey identifies a mapped fragment. The target is part of the key because
+// Analyze answers "what does this chunk say about <target>": the same chunk maps
+// to different fragments per subject, and the cache is shared across exports. It
+// takes the target the caller passed to the analyzer, not s.opts.Target, so the
+// key can never label a fragment about someone else.
+func (s *AnalyzeService) cacheKey(c portrait.Chunk, target string) string {
 	sum := sha256.Sum256([]byte(c.Text))
-	return kvcache.Signature("map", s.opts.Model) + ":" + hex.EncodeToString(sum[:])
+	return kvcache.Signature("map", s.opts.Model, target) + ":" + hex.EncodeToString(sum[:])
 }
 
 func (s *AnalyzeService) indexChunks(ctx context.Context, chunks []portrait.Chunk) error {

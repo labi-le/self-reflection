@@ -1,8 +1,9 @@
 # tg2llm in Docker (GPU vision via llama.cpp)
 
-Runs photo description on your AMD GPU (Vulkan) through a `llama.cpp` server, and
-voice transcription via a bundled `whisper-cli`. Mirrors the existing
-`/mnt/ssd2tb/llm/models` llama.cpp compose pattern.
+Runs image description (photos and video-note frames) on your AMD GPU (Vulkan)
+through a `llama.cpp` server, and voice / video-note transcription via a bundled
+`whisper-cli`. Mirrors the existing `/mnt/ssd2tb/llm/models` llama.cpp compose
+pattern.
 
 ## 1. Download the vision model (once)
 
@@ -36,23 +37,34 @@ make run                                      # uses the default export path
 make run EXPORT_DIR=/path/to/ChatExport       # or point it at your export
 ```
 
-Output lands at `<export>/parsed_dialogue.txt`. The media cache
-(`.tg2llm_media_cache.db`) persists in the export dir, so re-runs only decode new
-or previously-failed media.
+Output lands at `<export>/parsed_dialogue.txt`. The decoded-media cache lives in the
+checkout at `cache/media.db`: compose bind-mounts `../cache` to `/cache` and sets
+`TG2LLM_CACHE_DIR=/cache` so the binary finds it (there is no `go.mod` in the image to
+anchor on). Container and host runs therefore share one database and re-runs only decode
+new or previously-failed media. `make run` creates `../cache` first and passes your
+uid/gid, so the cache and the output file stay yours — keep that directory in place, or
+Docker recreates it root-owned and decoding falls back to uncached with a `WRN cache open
+failed` line. A `parsed_dialogue.txt` left behind by an older (root) run must be deleted once
+(`sudo rm <export>/parsed_dialogue.txt`), otherwise the first run after upgrading fails
+with a permission error before it decodes anything.
 
 ## Overridable variables
 
-| Var            | Default                                            | Purpose                          |
-|----------------|----------------------------------------------------|----------------------------------|
-| `MODELS_DIR`   | `/mnt/ssd2tb/llm/models`                           | host dir with the GGUF + mmproj  |
-| `EXPORT_DIR`   | `/home/labile/Downloads/ChatExport_2026-06-25`     | Telegram export folder           |
-| `WHISPER_MODEL`| `/home/labile/.cache/whisper-cpp/ggml-small.bin`   | whisper model for voice          |
+| Var             | Default                                          | Purpose                              |
+|-----------------|--------------------------------------------------|--------------------------------------|
+| `MODELS_DIR`    | `/mnt/ssd2tb/llm/models`                         | host dir with the GGUF + mmproj      |
+| `EXPORT_DIR`    | `/home/labile/Downloads/ChatExport_2026-06-25`   | Telegram export folder               |
+| `WHISPER_MODEL` | `/home/labile/.cache/whisper-cpp/ggml-small.bin` | whisper model for voice              |
+| `TG2LLM_UID`    | `$(id -u)` via `make run`, else `1000`           | uid the container writes as          |
+| `TG2LLM_GID`    | `$(id -g)` via `make run`, else `1000`           | gid the container writes as          |
 
 ## How it maps to the code
 
-- Photos → `--vision-host http://vision:8080`: the OpenAI-compatible describer POSTs to the
-  llama.cpp server's `/v1/chat/completions` with the image as a base64 `image_url`. Runs on
-  the GPU (Vulkan).
-- Voice → `whisper-cli` (bundled in the image) + `ffmpeg`, no server needed.
-- Context size is set server-side via `-c 16384` in the compose command (the OpenAI
-  endpoint has no per-request context field). Raise it if large images error out.
+- Photos and video-note frames → `--vision-host http://vision:8080`: the OpenAI-compatible
+  describer POSTs to the llama.cpp server's `/v1/chat/completions` with the image as a
+  base64 `image_url`. Runs on the GPU (Vulkan).
+- Voice and video-note audio → `whisper-cli` (bundled in the image) + `ffmpeg`, no server
+  needed. A video note yields `[video_message: <frame description> Речь: <transcript>]`.
+- Context size is set server-side via `-c 4096` in the compose command, with
+  `--image-max-tokens 1024` capping one image's token cost (the OpenAI endpoint has no
+  per-request context field). Raise both if large images error out.

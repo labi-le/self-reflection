@@ -149,7 +149,7 @@ func (d *Decoder) decodeVideo(ctx context.Context, data []byte) string {
 			desc = strings.TrimSpace(d.describe(frame))
 		}
 	}
-	return combineVideo(desc, transcript)
+	return media.CombineVideo(desc, transcript)
 }
 
 // frameDescribe renders a frame-only medium (sticker or GIF/animation) to a JPEG
@@ -195,19 +195,6 @@ func (d *Decoder) ffmpegFrame(ctx context.Context, videoPath string) (string, bo
 		return "", false
 	}
 	return frame, true
-}
-
-// combineVideo joins a frame description and a speech transcript into one line,
-// keeping whichever is non-empty.
-func combineVideo(desc, transcript string) string {
-	switch {
-	case desc != "" && transcript != "":
-		return desc + " Речь: " + transcript
-	case desc != "":
-		return desc
-	default:
-		return transcript
-	}
 }
 
 // writeTemp writes data to a uniquely-named temp file with ext and returns its

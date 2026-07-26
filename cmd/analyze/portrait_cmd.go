@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -37,7 +36,7 @@ func runPortrait(args []string) error {
 	embedModel := fs.String("embed-model", "default", "embedding model name")
 	chromaHost := fs.String("chroma-host", "", "Chroma vector server base URL (with --embed-host builds the Q&A index)")
 	jobs := fs.Int("jobs", 3, "parallel map workers")
-	cachePath := fs.String("cache", "", "fragment cache db (default <export-dir>/.tg2llm_analysis_cache.db)")
+	cachePath := fs.String("cache", "", "analysis fragment cache db (default $TG2LLM_CACHE_DIR, else <project>/cache, else ~/.cache/tg2llm; file analysis.db)")
 	sessionGap := fs.Duration("session-gap", 30*time.Minute, "silence gap that starts a new session")
 	chunkChars := fs.Int("chunk-chars", 12000, "max characters per chunk fed to the model")
 	repairRetries := fs.Int("repair-retries", 1, "structured-output repair attempts")
@@ -47,13 +46,14 @@ func runPortrait(args []string) error {
 	windowBy := fs.String("window-by", "", "emit a per-window timeline: month | week")
 	out := fs.String("out", "portrait.json", "portrait JSON output path")
 	markdown := fs.String("markdown", "", "also write a Markdown report to this path")
-	decodeMedia := fs.Bool("decode-media", false, "transcribe voice + describe photos first")
-	whisperModel := fs.String("whisper-model", "", "whisper GGUF model path (voice, with --decode-media)")
+	decodeMedia := fs.Bool("decode-media", false, "transcribe voice + video notes and describe photos first")
+	mediaCache := fs.String("media-cache", "", "decoded-media cache db, shared with parse (default $TG2LLM_CACHE_DIR, else <project>/cache, else ~/.cache/tg2llm; file media.db)")
+	whisperModel := fs.String("whisper-model", "", "whisper GGUF model path (voice + video notes, with --decode-media)")
 	whisperBin := fs.String("whisper-bin", "whisper-cli", "whisper binary")
 	whisperLang := fs.String("whisper-lang", "ru", "spoken language")
 	visionModel := fs.String("vision-model", "qwen2.5vl:7b", "vision model name")
 	visionHost := fs.String("vision-host", "http://localhost:8080", "vision server base URL")
-	visionPrompt := fs.String("vision-prompt", "", "vision prompt")
+	visionPrompt := fs.String("vision-prompt", "", "vision prompt; overrides BOTH the photo and the video-note-frame defaults")
 	verbose := fs.Bool("verbose", false, "trace logging")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -85,7 +85,7 @@ func runPortrait(args []string) error {
 		return fmt.Errorf("no messages after date filtering")
 	}
 	if *decodeMedia {
-		dec := buildDecoder(input, *cachePath, *whisperModel, *whisperBin, *whisperLang, *visionModel, *visionHost, *visionPrompt, logger)
+		dec := buildDecoder(input, *mediaCache, *whisperModel, *whisperBin, *whisperLang, *visionModel, *visionHost, *visionPrompt, logger)
 		msgs = decodeMessages(msgs, dec, logger)
 	}
 
@@ -98,7 +98,7 @@ func runPortrait(args []string) error {
 		logger.Info().Str("target", tgt).Msg("inferred target")
 	}
 
-	cache := openCache(input, *cachePath, logger)
+	cache := openCache(*cachePath, logger)
 	defer func() {
 		if cache != nil {
 			_ = cache.Close()
@@ -148,15 +148,16 @@ func runPortrait(args []string) error {
 	return nil
 }
 
-func openCache(input, cachePath string, logger zerolog.Logger) *kvcache.Cache {
+func openCache(cachePath string, logger zerolog.Logger) *kvcache.Cache {
 	if cachePath == "" {
-		cachePath = filepath.Join(filepath.Dir(abspath(input)), ".tg2llm_analysis_cache.db")
+		cachePath = kvcache.SharedPath("analysis.db")
 	}
 	c, err := kvcache.New(cachePath, "analysis_cache")
 	if err != nil {
-		logger.Warn().Err(err).Msg("opening analysis cache; running uncached")
+		logger.Warn().Err(err).Str("path", cachePath).Msg("opening analysis cache; running uncached")
 		return nil
 	}
+	logger.Info().Str("path", cachePath).Msg("analysis cache")
 	return c
 }
 

@@ -16,6 +16,7 @@ func TestCleanText(t *testing.T) {
 		{"photo placeholder via HasPhoto", Message{HasPhoto: true}, "[photo]"},
 		{"media_type placeholder", Message{MediaType: "voice_message"}, "[voice_message]"},
 		{"video placeholder", Message{MediaType: "video_file"}, "[video_file]"},
+		{"video note placeholder", Message{MediaType: "video_message"}, "[video_message]"},
 		{"empty no media", Message{}, ""},
 	}
 	for _, c := range cases {
@@ -38,7 +39,7 @@ func TestCaption(t *testing.T) {
 
 func TestIsUseless(t *testing.T) {
 	useless := []string{
-		"", "[photo]", "[voice_message]", "[video_file]", "[audio_file]",
+		"", "[photo]", "[voice_message]", "[video_file]", "[video_message]", "[audio_file]",
 		"[animation]", "[😀 Sticker]", "[🔥 Sticker]", "https://example.com/x",
 		"http://t.me/foo",
 	}
@@ -49,7 +50,7 @@ func TestIsUseless(t *testing.T) {
 	}
 	useful := []string{
 		"hello", "[photo: a cat on a sofa]", "check https://example.com out",
-		"[voice_message: привет]", "[Forwarded from X]: news",
+		"[voice_message: привет]", "[video_message: кадр Речь: привет]", "[Forwarded from X]: news",
 	}
 	for _, s := range useful {
 		if IsUseless(s) {
