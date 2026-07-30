@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 
 	"tg2llm/internal/domain/dialogue"
@@ -33,20 +34,12 @@ func (s *ParseService) Run() error {
 		return fmt.Errorf("reading messages: %w", err)
 	}
 
-	decodedByID := s.decodeAll(messages)
+	decodedByKey := s.decodeAll(messages)
 
 	var currentDay string
 
 	for _, msg := range messages {
-		if !s.opts.DateRange.Contains(msg.Date) {
-			continue
-		}
-
-		// --chat-scope filter (chatml mode only): drop out-of-scope chat types
-		// before any per-message work. Gated on Format so the default text
-		// pipeline — where ChatScope defaults to "personal" — still emits every
-		// message and stays byte-identical.
-		if s.opts.Format == "chatml" && !chatInScope(s.opts.ChatScope, msg.ChatType) {
+		if !s.inScope(msg) {
 			continue
 		}
 
@@ -54,14 +47,25 @@ func (s *ParseService) Run() error {
 
 		// Media decoding
 		if s.decoder != nil {
-			decoded := decodedByID[msg.ID]
-			if decoded != "" {
-				caption := dialogue.Caption(msg)
-				tag := dialogue.FormatDecoded(msg, decoded)
-				if caption != "" {
-					text = caption + " " + tag
+			if decoded := decodedByKey[decodeKey(msg)]; decoded != "" {
+				if s.opts.Format == "chatml" {
+					// The chatml sink builds turns from ExtractedText and skips empty
+					// ones, so without this fold every voice message and video note
+					// silently vanishes from the corpus. The rendering depends on the
+					// side: a turn the persona reads must look like the bot's inference
+					// input, a turn it wrote is the supervised target and may carry only
+					// what the human actually said.
+					if msg.FromID == s.opts.OwnerFromID {
+						msg.ExtractedText = dialogue.PersonaOwnText(msg, decoded)
+					} else {
+						msg.ExtractedText = dialogue.PersonaText(msg, decoded)
+					}
+					text = msg.ExtractedText
 				} else {
-					text = tag
+					text = dialogue.FormatDecoded(msg, decoded)
+					if caption := dialogue.Caption(msg); caption != "" {
+						text = caption + " " + text
+					}
 				}
 			}
 		}
@@ -123,13 +127,26 @@ func chatInScope(scope, chatType string) bool {
 	return true
 }
 
-// decodeAll decodes media for every in-range message, using s.opts.Jobs worker
-// goroutines (Jobs <= 1 stays sequential). Results are keyed by message ID and
-// the caller writes them back in original order, so any worker count produces
-// byte-identical output. The collecting goroutine is the sole writer of the
-// returned map, so no locking is needed around it.
-func (s *ParseService) decodeAll(messages []dialogue.Message) map[int]string {
-	decoded := make(map[int]string)
+// inScope reports whether a message survives the date filter and — in chatml mode
+// only — the --chat-scope filter. Gated on Format because ChatScope defaults to
+// "personal" while the text pipeline has no scope concept and must keep emitting
+// every chat. Run and decodeAll share it: decoding a message the run then drops
+// would spend a whisper or vision call on nothing (a full-account export carries
+// tens of thousands of them).
+func (s *ParseService) inScope(msg dialogue.Message) bool {
+	if !s.opts.DateRange.Contains(msg.Date) {
+		return false
+	}
+	return s.opts.Format != "chatml" || chatInScope(s.opts.ChatScope, msg.ChatType)
+}
+
+// decodeAll decodes media for every in-scope message, using s.opts.Jobs worker
+// goroutines (Jobs <= 1 stays sequential). Results are keyed by decodeKey (chat id
+// + message id) and the caller writes them back in original order, so any worker
+// count produces byte-identical output. The collecting goroutine is the sole
+// writer of the returned map, so no locking is needed around it.
+func (s *ParseService) decodeAll(messages []dialogue.Message) map[string]string {
+	decoded := make(map[string]string)
 	if s.decoder == nil {
 		return decoded
 	}
@@ -141,9 +158,9 @@ func (s *ParseService) decodeAll(messages []dialogue.Message) map[int]string {
 
 	if jobs == 1 {
 		for _, msg := range messages {
-			if s.opts.DateRange.Contains(msg.Date) {
+			if s.inScope(msg) {
 				if text := s.decoder.Decode(msg); text != "" {
-					decoded[msg.ID] = text
+					decoded[decodeKey(msg)] = text
 				}
 			}
 		}
@@ -151,7 +168,7 @@ func (s *ParseService) decodeAll(messages []dialogue.Message) map[int]string {
 	}
 
 	type result struct {
-		id   int
+		key  string
 		text string
 	}
 	jobCh := make(chan dialogue.Message)
@@ -164,7 +181,7 @@ func (s *ParseService) decodeAll(messages []dialogue.Message) map[int]string {
 			defer wg.Done()
 			for msg := range jobCh {
 				if text := s.decoder.Decode(msg); text != "" {
-					resCh <- result{id: msg.ID, text: text}
+					resCh <- result{key: decodeKey(msg), text: text}
 				}
 			}
 		}()
@@ -172,7 +189,7 @@ func (s *ParseService) decodeAll(messages []dialogue.Message) map[int]string {
 
 	go func() {
 		for _, msg := range messages {
-			if s.opts.DateRange.Contains(msg.Date) {
+			if s.inScope(msg) {
 				jobCh <- msg
 			}
 		}
@@ -185,7 +202,15 @@ func (s *ParseService) decodeAll(messages []dialogue.Message) map[int]string {
 	}()
 
 	for r := range resCh {
-		decoded[r.id] = r.text
+		decoded[r.key] = r.text
 	}
 	return decoded
+}
+
+// decodeKey identifies a message across the whole run. A Telegram message id is
+// unique only within its chat, and a full-account export flattens every chat into
+// one slice, so keying decodes by id alone lets one chat's transcript surface on
+// another chat's message — in chatml mode, straight into a training turn.
+func decodeKey(msg dialogue.Message) string {
+	return msg.ChatID + ":" + strconv.Itoa(msg.ID)
 }

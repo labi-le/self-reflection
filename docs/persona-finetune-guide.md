@@ -172,8 +172,10 @@ Export your Telegram history as **JSON** (the parser reads the standard Telegram
 AyuGram export shape):
 
 1. **Telegram Desktop → Settings → Advanced → Export Telegram data.**
-2. Select the chat(s), set format to **Machine-readable JSON**, include text (media optional —
-   the persona model is text-only).
+2. Select the chat(s), set format to **Machine-readable JSON**, and **include photos, voice
+   messages and video messages** — the parser decodes them into text, and without the files on
+   disk every caption-less voice message, кружок and photo is dropped from the corpus (in a
+   voice-heavy chat that is ~30% of it).
 3. This produces **`result.json`**. Place it at the **repo root** (`<repo>/result.json`).
 
 > Privacy: this file contains real private messages. It is git-ignored; never commit it.
@@ -184,7 +186,22 @@ AyuGram export shape):
 
 The export is grouped into **ShareGPT/OpenAI "messages"** conversations: the persona's own
 messages become `assistant` turns, the other party's become `user` turns, under one fixed
-system prompt. Output: **`finetune/data/train.jsonl`** (24 762 convos), one JSON object per line.
+system prompt. Output: **`finetune/data/train.jsonl`** — 24 762 convos in the current local artifact,
+which was parsed *without* media; a `--decode-media` run yields materially more (on a 5.5k-message
+voice-heavy chat it went 959 → 1673 examples, +74%) and the downstream premium/subset counts scale
+with it. One JSON object per line.
+
+Media only reaches the corpus with `--decode-media` (plus `--whisper-model` and a reachable
+`--vision-host`): the sink builds a turn from a message's own text, so an undecoded voice message
+has nothing to contribute. Decoded, the persona's own voice becomes its `assistant` turns verbatim
+(for a кружок, the spoken half — the frame description stays out), while media the other party
+sent is rendered exactly as the bot renders it at inference (`[фото: …]`, `[видео: …]`). Machine
+descriptions are deliberately kept OUT of `assistant` turns — the bot can only send text.
+
+> Privacy: decoding puts machine text into the corpus — whisper transcripts of private speech, and
+> vision descriptions that transcribe text out of screenshots (the default prompt asks for it).
+> Stage 3's scrubbers are digit-anchored regexes: a phone number spoken as words or spaced out by
+> OCR passes straight through, so spot-check the decoded turns before training.
 
 **Locked schema** (full contract in [`finetune/README.md`](../finetune/README.md)):
 

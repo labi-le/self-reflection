@@ -77,7 +77,9 @@ func NewSink(w io.Writer, opts Options) *Sink {
 // WriteMessage accumulates msg into the per-ChatID buffer. It never writes to the
 // underlying writer (materialisation happens once, at Close). The formatted text
 // produced by the service is intentionally ignored: a training turn's content is
-// the message's own ExtractedText.
+// the message's ExtractedText, which the service pre-folds decoded media into
+// (dialogue.PersonaText / PersonaOwnText, see app/service.go) so media messages
+// are not dropped.
 func (s *Sink) WriteMessage(msg dialogue.Message, _ string) error {
 	b, ok := s.chats[msg.ChatID]
 	if !ok {

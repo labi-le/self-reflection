@@ -3,6 +3,7 @@ package app_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,4 +159,154 @@ func TestServiceParallelMatchesSequential(t *testing.T) {
 func TestServiceEmptyInput(t *testing.T) {
 	got := runService(t, fakeSource{}, nil, app.ParseOptions{ShowDateHeaders: true})
 	assertEqual(t, got, "")
+}
+
+// captureSink records what a run hands the sink: the message, whose ExtractedText
+// the chatml sink turns into a training turn, and the formatted line, which only
+// the text sink writes.
+type captureSink struct {
+	msgs      []dialogue.Message
+	formatted []string
+}
+
+func (c *captureSink) WriteDayHeader(string) error { return nil }
+func (c *captureSink) WriteMessage(m dialogue.Message, text string) error {
+	c.msgs = append(c.msgs, m)
+	c.formatted = append(c.formatted, text)
+	return nil
+}
+func (c *captureSink) Close() error { return nil }
+
+func runCapture(t *testing.T, dec app.MediaDecoder, opts app.ParseOptions, msgs []dialogue.Message) *captureSink {
+	t.Helper()
+	sink := &captureSink{}
+	if err := app.NewParseService(fakeSource{msgs: msgs}, sink, dec, opts).Run(); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return sink
+}
+
+// TestServiceChatmlFoldsDecodedMedia proves a chatml run carries decoded media in
+// the message's own text — the sink builds turns from ExtractedText and skips empty
+// ones, so without the fold every voice message and video note vanishes from the
+// corpus — and that the rendering depends on the side. A turn the persona READS
+// mirrors the bot's inference input; a turn it WROTE is the supervised target and
+// may carry only what the human said, never a machine description the bot has no
+// way to send.
+func TestServiceChatmlFoldsDecodedMedia(t *testing.T) {
+	const owner = "userOwner"
+	msgs := []dialogue.Message{
+		{ID: 1, Date: ts(10, 0, 0), FromID: "userOther", MediaType: "voice_message", FilePath: "v/1.ogg"},
+		{ID: 2, Date: ts(10, 1, 0), FromID: "userOther", HasPhoto: true, PhotoPath: "p/2.jpg", ExtractedText: "гляди"},
+		{ID: 3, Date: ts(10, 2, 0), FromID: "userOther", MediaType: "video_message", FilePath: "r/3.mp4"},
+		{ID: 4, Date: ts(10, 3, 0), FromID: "userOther", MediaType: "voice_message", FilePath: "v/4.ogg", ForwardedFrom: "Some Channel"},
+		{ID: 5, Date: ts(10, 4, 0), FromID: owner, MediaType: "voice_message", FilePath: "v/5.ogg"},
+		{ID: 6, Date: ts(10, 5, 0), FromID: owner, HasPhoto: true, PhotoPath: "p/6.jpg", ExtractedText: "вот"},
+		{ID: 7, Date: ts(10, 6, 0), FromID: owner, HasPhoto: true, PhotoPath: "p/7.jpg"},
+	}
+	dec := fakeDecoder{out: map[int]string{
+		1: "привет как дела", 2: "рыжий кот", 3: "кадр Речь: ага", 4: "переслано голосом",
+		5: "я уже еду", 6: "скриншот переписки", 7: "селфи у окна",
+	}}
+
+	sink := runCapture(t, dec, app.ParseOptions{Format: "chatml", ChatScope: "all", OwnerFromID: owner}, msgs)
+
+	want := map[int]string{
+		1: "привет как дела",
+		2: "гляди [фото: рыжий кот]",
+		3: "[видео: кадр Речь: ага]",
+		4: "переслано голосом",
+		5: "я уже еду", // owner voice: his own words are a legitimate target
+		6: "вот",       // owner photo: the caption only, never the description
+	}
+	if len(sink.msgs) != len(want) {
+		t.Fatalf("wrote %d messages, want %d (7 has no caption, so nothing of the owner's is left)", len(sink.msgs), len(want))
+	}
+	for i, m := range sink.msgs {
+		if m.ExtractedText != want[m.ID] {
+			t.Errorf("msg %d turn text = %q, want %q", m.ID, m.ExtractedText, want[m.ID])
+		}
+		if strings.Contains(m.ExtractedText, "Forwarded from") {
+			t.Errorf("msg %d carries the forward prefix into a training turn: %q", m.ID, m.ExtractedText)
+		}
+		// The prefix belongs to the formatted line the text sink writes, and is the
+		// reason the two strings must stay decoupled.
+		if m.ID == 4 && !strings.HasPrefix(sink.formatted[i], "[Forwarded from Some Channel]: ") {
+			t.Errorf("formatted line for msg 4 = %q, want the forward prefix", sink.formatted[i])
+		}
+	}
+}
+
+// TestServiceTextFormatKeepsExtractedText proves the fold is chatml-only: the text
+// pipeline still renders media into the output line and leaves the message alone.
+func TestServiceTextFormatKeepsExtractedText(t *testing.T) {
+	msgs := []dialogue.Message{{ID: 1, Date: ts(10, 0, 0), Sender: "A", MediaType: "voice_message", FilePath: "v/1.ogg"}}
+	dec := fakeDecoder{out: map[int]string{1: "привет"}}
+
+	sink := runCapture(t, dec, app.ParseOptions{}, msgs)
+	if len(sink.msgs) != 1 || sink.msgs[0].ExtractedText != "" {
+		t.Fatalf("text mode message = %+v, want ExtractedText untouched", sink.msgs)
+	}
+	if sink.formatted[0] != "[voice_message: привет]" {
+		t.Fatalf("text mode line = %q, want the reading tag", sink.formatted[0])
+	}
+}
+
+// chatAwareDecoder answers per chat, so a test can tell which chat's decode landed
+// on a message.
+type chatAwareDecoder struct{}
+
+func (chatAwareDecoder) Decode(msg dialogue.Message) string { return "decode of chat " + msg.ChatID }
+func (chatAwareDecoder) Flush() error                       { return nil }
+
+// TestServiceDecodesPerChatNotPerID proves decodes are keyed by chat AND id. A
+// Telegram message id is unique only inside its chat, and a full-account export
+// flattens every chat into one slice, so an id-only key lets one chat's transcript
+// surface on another chat's message — in chatml mode, straight into a training turn.
+func TestServiceDecodesPerChatNotPerID(t *testing.T) {
+	msgs := []dialogue.Message{
+		{ID: 42, Date: ts(10, 0, 0), Sender: "A", ChatID: "111", ChatType: "personal_chat", MediaType: "voice_message", FilePath: "v/a.ogg"},
+		{ID: 42, Date: ts(10, 1, 0), Sender: "B", ChatID: "222", ChatType: "personal_chat", MediaType: "voice_message", FilePath: "v/b.ogg"},
+	}
+	for _, jobs := range []int{1, 4} {
+		sink := runCapture(t, chatAwareDecoder{}, app.ParseOptions{Format: "chatml", ChatScope: "all", Jobs: jobs}, msgs)
+		if len(sink.msgs) != 2 {
+			t.Fatalf("jobs=%d: wrote %d messages, want 2", jobs, len(sink.msgs))
+		}
+		for _, m := range sink.msgs {
+			if want := "decode of chat " + m.ChatID; m.ExtractedText != want {
+				t.Errorf("jobs=%d: chat %s got %q, want %q", jobs, m.ChatID, m.ExtractedText, want)
+			}
+		}
+	}
+}
+
+// countingDecoder records how many messages a run actually decoded.
+type countingDecoder struct{ calls *int }
+
+func (c countingDecoder) Decode(dialogue.Message) string { *c.calls++; return "расшифровка" }
+func (c countingDecoder) Flush() error                   { return nil }
+
+// TestServiceDecodesOnlyInScopeChats proves the decoder is not spent on messages the
+// run then drops. A full-account export carries tens of thousands of media messages
+// in groups and channels; with --chat-scope personal every one of them is a whisper
+// or vision call for a message that never reaches the corpus.
+func TestServiceDecodesOnlyInScopeChats(t *testing.T) {
+	msgs := []dialogue.Message{
+		{ID: 1, Date: ts(10, 0, 0), ChatID: "1", ChatType: "personal_chat", MediaType: "voice_message", FilePath: "v/1.ogg"},
+		{ID: 2, Date: ts(10, 1, 0), ChatID: "2", ChatType: "public_supergroup", MediaType: "voice_message", FilePath: "v/2.ogg"},
+	}
+	for _, jobs := range []int{1, 4} {
+		calls := 0
+		runCapture(t, countingDecoder{calls: &calls}, app.ParseOptions{Format: "chatml", ChatScope: "personal", Jobs: jobs}, msgs)
+		if calls != 1 {
+			t.Errorf("jobs=%d: decoded %d messages, want 1 (the supergroup is out of scope)", jobs, calls)
+		}
+	}
+	// The text pipeline has no scope concept and must keep decoding everything.
+	calls := 0
+	runCapture(t, countingDecoder{calls: &calls}, app.ParseOptions{ChatScope: "personal"}, msgs)
+	if calls != 2 {
+		t.Errorf("text mode decoded %d messages, want 2 (scope is chatml-only)", calls)
+	}
 }

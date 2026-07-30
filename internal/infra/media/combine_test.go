@@ -14,8 +14,14 @@ func TestCombineVideo(t *testing.T) {
 	}{
 		{"both halves", "кадр", "речь", "кадр Речь: речь"},
 		{"frame only", "кадр", "", "кадр"},
-		{"transcript only", "", "речь", "речь"},
+		// The marker rides along even with no description, so its absence can only
+		// mean "description only" — the persona rendering relies on that.
+		{"transcript only", "", "речь", "Речь: речь"},
 		{"nothing decoded", "", "", ""},
+		// A description that quotes the marker is neutralised, so the separator stays
+		// unambiguous and the persona rendering cannot mistake machine prose for speech.
+		{"description quoting the marker", "на кадре Речь: привет", "ага", "на кадре речь: привет Речь: ага"},
+		{"description quoting the marker, no speech", "на кадре Речь: привет", "", "на кадре речь: привет"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -150,7 +150,8 @@ per-request flag.
   wired → `decodeVideoNote`: whisper transcribes the `.mp4` **audio track** (`FilePath`, kind
   `voice` — ffmpeg demuxes it like any container) and the vision backend describes the exported
   **thumbnail** (`ThumbnailPath`, kind `frame`). `CombineVideo` joins them as
-  `<description> Речь: <transcript>`; a missing half is simply omitted. The two halves are
+  `<description> Речь: <transcript>`, and keeps the `Речь: ` label even with no description, so a
+  decode without it is unambiguously description-only. The two halves are
   cached independently, so enabling vision later reuses the transcripts already on disk.
 - **Photo** — only if `HasPhoto && describeFn != nil` → `decodePath(PhotoPath, …, "photo")`.
   `OpenAIDescriber.Describe`: read file → base64 → POST `<host>/v1/chat/completions` with
@@ -164,6 +165,36 @@ Backend errors are **logged, never fatal** (`.Warn().Err(...)`, visible with `--
 message is left undecoded and the run continues. The vision server's context size is set
 server-side (`-c 4096` in compose, with `--image-max-tokens 1024` bounding one image), so there
 is no per-request `num_ctx`.
+
+**Three renderings of the same decode.** The text pipeline writes the reading-oriented
+`dialogue.FormatDecoded` tag (`[voice_message: …]`). With `--format chatml` the service instead
+folds the decode into `msg.ExtractedText` (`app/service.go`), because the chatml sink builds turns
+from `ExtractedText` and skips empty ones — without the fold every voice message, video note and
+caption-less photo silently vanishes from the corpus (~31% of a voice-heavy chat). Which rendering
+depends on the side, keyed on `opts.OwnerFromID` (which `buildPipeline` writes back after
+auto-detection, so the fold and `chatmlsink`'s `role` agree):
+
+- **Read by the persona** (`dialogue.PersonaText`) mirrors the bot's inference input
+  (`botapi.formatMedia`) for the three media the decoder handles: voice → the words themselves,
+  video note → `<caption> [видео: …]`, photo → `<caption> [фото: …]`. It does NOT cover
+  `formatMedia`'s `[аудио: …]` / `[гифка: …]` or `formatSticker`, because the decoder produces
+  nothing for those; a decoder branch added later must extend both functions in lock-step. Its
+  `default` arm keeps the caption alone rather than leaking untagged machine prose.
+- **Written by the persona** (`dialogue.PersonaOwnText`) is the supervised target, so it carries
+  only what the human said: the voice transcript, the speech half of a video note (split on the
+  last `dialogue.SpeechMarker`, which `media.CombineVideo` always emits when there is speech, so
+  no marker means there is no human half to keep), and otherwise just the caption.
+  A machine description must never become a target — the bot can only send text, so the model
+  would emit `[фото: …]` at the chat partner verbatim.
+- **Register is deliberately NOT normalised.** Whisper returns capitalised, punctuated prose, so
+  folding it makes ~35% of assistant turns start with a capital against ~0.5% for the owner's
+  typed messages. Rewriting that in `internal/domain` would silently mutate training data; it
+  belongs to dataprep (`assemble_premium.py`, whose force-lowercase step currently touches only
+  the instruct half). Same for PII: transcripts and the vision prompt's OCR of screenshots now
+  reach the corpus, and Stage 3's scrubbers are digit-anchored regexes.
+
+The `[Forwarded from X]: ` prefix never reaches a training turn because it is applied to the
+formatted line the sink ignores, not to `ExtractedText`.
 
 ## Shared SQLite cache (`internal/infra/kvcache` + `media/decoder.go`)
 

@@ -130,10 +130,12 @@ parse --decode-media --vision-host http://localhost:8080 \
 `--decode-media` turns each supported media message into text:
 
 - **Voice** (`voice_message`) → `ffmpeg` converts the `.ogg` to 16 kHz WAV, then `whisper-cli` transcribes it. Requires `--whisper-model` (a whisper GGUF, e.g. `ggml-small.bin`).
-- **Video notes / кружки** (`video_message`) → both halves: `whisper-cli` transcribes the `.mp4` audio track and the vision model describes the frame Telegram exported as the message's `thumbnail`, rendered as `<description> Речь: <transcript>`. A half whose backend or file is missing is simply left out.
+- **Video notes / кружки** (`video_message`) → both halves: `whisper-cli` transcribes the `.mp4` audio track and the vision model describes the frame Telegram exported as the message's `thumbnail`, rendered as `<описание> Речь: <транскрипт>`. The `Речь: ` label stays even when there is no description, so the spoken half is always recoverable; a half whose backend or file is missing is simply left out.
 - **Photos** → sent (base64) to the vision server and replaced with its description. The server is any OpenAI-compatible vision endpoint (POST `/v1/chat/completions`: llama.cpp `server`, vLLM, …), set via `--vision-host`. This is what the Docker setup uses for **GPU** acceleration.
 
 Any backend error is logged (`--verbose` for detail) and the message is left undecoded rather than crashing the run.
+
+With `--format chatml` the same decodes land in the training turns. Media the persona **reads** is rendered the way the bot renders it at inference — a voice message becomes the transcript itself, a photo or кружок becomes `<caption> [фото: <описание>]` / `[видео: …]`. Media the persona **wrote** is a supervised target, so it carries only what the human said (transcript, the speech half of a video note, or just the caption): the bot can only send text, so a model trained on `[фото: …]` would type that at its chat partner. Without `--decode-media` every caption-less voice message, video note and photo is dropped from the dataset (a turn needs text).
 
 ### Caching
 

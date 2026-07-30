@@ -2,10 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rs/zerolog"
+
+	"tg2llm/internal/app"
+	"tg2llm/internal/infra/tgexport"
 )
 
 // fullAccountChatML is a minimal full-account export: owner (user777001) and a
@@ -84,5 +90,32 @@ func TestRunChatMLFormatSelectsSink(t *testing.T) {
 	}
 	if !sawAssistant {
 		t.Fatalf("owner message 'hello back' never appeared as assistant:\n%s", s)
+	}
+}
+
+// TestBuildPipelineResolvesOwnerIntoOptions proves the auto-detected owner is
+// written back into ParseOptions, not just handed to the sink. The service's media
+// fold keys off opts.OwnerFromID to decide whether a decoded message is a training
+// target: if the two disagreed, the owner's own photos would be rendered as if
+// someone else had sent them and their machine descriptions would become the
+// supervised signal.
+func TestBuildPipelineResolvesOwnerIntoOptions(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "export.json")
+	if err := os.WriteFile(input, []byte(fullAccountChatML), 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	opts := app.ParseOptions{Format: "chatml", ChatScope: "all"} // no --owner-user-id
+	reader := tgexport.NewReader(input, zerolog.New(io.Discard))
+	_, _, f, err := buildPipeline(&opts, reader, filepath.Join(dir, "out.jsonl"), zerolog.New(io.Discard))
+	if err != nil {
+		t.Fatalf("buildPipeline: %v", err)
+	}
+	if f != nil {
+		defer f.Close()
+	}
+	if opts.OwnerFromID != "user777001" {
+		t.Fatalf("opts.OwnerFromID = %q, want the auto-detected user777001", opts.OwnerFromID)
 	}
 }

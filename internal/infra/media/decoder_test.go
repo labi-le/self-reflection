@@ -330,11 +330,11 @@ func TestDecoderVideoNoteHalves(t *testing.T) {
 		want        string
 	}{
 		{"both backends", transcribe, describe, videoRel, thumbRel, "кадр Речь: речь"},
-		{"thumbnail absent", transcribe, describe, videoRel, "", "речь"},
-		{"thumbnail not exported", transcribe, describe, videoRel, "(File not included. Change data exporting settings to download.)", "речь"},
-		{"thumbnail missing on disk", transcribe, describe, videoRel, "round/gone.jpg", "речь"},
+		{"thumbnail absent", transcribe, describe, videoRel, "", "Речь: речь"},
+		{"thumbnail not exported", transcribe, describe, videoRel, "(File not included. Change data exporting settings to download.)", "Речь: речь"},
+		{"thumbnail missing on disk", transcribe, describe, videoRel, "round/gone.jpg", "Речь: речь"},
 		{"video missing on disk", transcribe, describe, "round/gone.mp4", thumbRel, "кадр"},
-		{"vision disabled", transcribe, nil, videoRel, thumbRel, "речь"},
+		{"vision disabled", transcribe, nil, videoRel, thumbRel, "Речь: речь"},
 		{"whisper disabled", nil, describe, videoRel, thumbRel, "кадр"},
 		{"both backends silent", silent, silent, videoRel, thumbRel, ""},
 		{"no backend", nil, nil, videoRel, thumbRel, ""},
@@ -361,7 +361,7 @@ func TestDecoderVideoNoteWinsOverPhotoKey(t *testing.T) {
 
 	d := NewDecoder(root, transcribe, describe, nil, nil, nil, testLogger)
 	msg := dialogue.Message{MediaType: "video_message", FilePath: videoRel, HasPhoto: true}
-	if got := d.Decode(msg); got != "речь" {
+	if got := d.Decode(msg); got != "Речь: речь" {
 		t.Fatalf("decode = %q, want the transcript (video-note branch must win)", got)
 	}
 }

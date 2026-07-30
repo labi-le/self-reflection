@@ -32,10 +32,12 @@ func (c cachedMessages) ReadMessages() ([]dialogue.Message, map[int]bool, error)
 // the sink's role-mapping keys off it, so it reads the export ONCE here to
 // resolve the owner (an explicit --owner-user-id wins, otherwise the reader's
 // auto-detected owner) and hands the parsed messages to the service via a cached
-// source, avoiding a second parse. The returned *os.File is non-nil only for
-// chatml — its sink writes to but does not close it — and the caller closes it
-// after the run.
-func buildPipeline(opts app.ParseOptions, reader *tgexport.Reader, outputPath string, logger zerolog.Logger) (app.MessageSource, app.DialogueSink, *os.File, error) {
+// source, avoiding a second parse. The resolved owner is written back into opts:
+// the service's media fold keys off the same id, and a disagreement would render
+// the owner's decoded media as if someone else had sent it. The returned *os.File
+// is non-nil only for chatml — its sink writes to but does not close it — and the
+// caller closes it after the run.
+func buildPipeline(opts *app.ParseOptions, reader *tgexport.Reader, outputPath string, logger zerolog.Logger) (app.MessageSource, app.DialogueSink, *os.File, error) {
 	if opts.Format != "chatml" {
 		sink, err := textsink.NewWriter(outputPath)
 		if err != nil {
@@ -49,10 +51,10 @@ func buildPipeline(opts app.ParseOptions, reader *tgexport.Reader, outputPath st
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	owner := opts.OwnerFromID
-	if owner == "" {
-		owner = reader.OwnerFromID()
+	if opts.OwnerFromID == "" {
+		opts.OwnerFromID = reader.OwnerFromID()
 	}
+	owner := opts.OwnerFromID
 
 	f, err := os.Create(outputPath)
 	if err != nil {

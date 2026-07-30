@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"tg2llm/internal/bot"
+	"tg2llm/internal/domain/dialogue"
 )
 
 // mediaDecoderFunc adapts a function to the bot.MediaDecoder port for tests.
@@ -258,6 +259,38 @@ func Test_formatMedia_cases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := formatMedia(tc.kind, tc.caption, tc.decoded); got != tc.want {
 				t.Fatalf("formatMedia = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Test_formatMedia_matches_the_training_rendering proves the corpus and inference
+// see the same string: dialogue.PersonaText renders an exported message the way this
+// transport renders the equivalent inbound one, and the chatml pipeline trains on
+// that. If the two drift, the persona model meets input shapes in production it was
+// never trained on. Only non-empty decodes are compared — an empty decode degrades
+// to a placeholder here and to a dropped message in the export pipeline, which is
+// deliberate.
+func Test_formatMedia_matches_the_training_rendering(t *testing.T) {
+	cases := []struct {
+		name    string
+		kind    bot.MediaKind
+		msg     dialogue.Message
+		caption string
+		decoded string
+	}{
+		{"voice", bot.MediaVoice, dialogue.Message{MediaType: "voice_message"}, "", "привет"},
+		{"photo", bot.MediaPhoto, dialogue.Message{HasPhoto: true}, "", "рыжий кот"},
+		{"photo with caption", bot.MediaPhoto, dialogue.Message{HasPhoto: true, ExtractedText: "гляди"}, "гляди", "рыжий кот"},
+		{"video note", bot.MediaVideo, dialogue.Message{MediaType: "video_message"}, "", "кадр Речь: ага"},
+		{"video note with caption", bot.MediaVideo, dialogue.Message{MediaType: "video_message", ExtractedText: "гляди"}, "гляди", "кадр Речь: ага"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			inference := formatMedia(c.kind, c.caption, c.decoded)
+			training := dialogue.PersonaText(c.msg, c.decoded)
+			if inference != training {
+				t.Fatalf("inference renders %q, training renders %q", inference, training)
 			}
 		})
 	}

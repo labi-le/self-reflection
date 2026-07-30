@@ -187,13 +187,14 @@ func run(args []string) error {
 
 	reader := tgexport.NewReader(inputPath, logger)
 
-	ctxLog.Debug().Object("opts", opts).Msg("parse options")
-
-	source, sink, sinkFile, err := buildPipeline(opts, reader, outputPath, logger)
+	source, sink, sinkFile, err := buildPipeline(&opts, reader, outputPath, logger)
 	if err != nil {
 		ctxLog.Error().Err(err).Msg("opening output file")
 		return err
 	}
+	// Logged after buildPipeline: it resolves the account owner into opts, and that
+	// is the field an operator inspects when a chatml run maps the wrong side.
+	ctxLog.Debug().Object("opts", opts).Msg("parse options")
 	if sinkFile != nil {
 		defer func() { _ = sinkFile.Close() }()
 	}
